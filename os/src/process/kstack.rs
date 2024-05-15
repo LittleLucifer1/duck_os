@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{config::{mm::PAGE_SIZE, task::KERNEL_STACK_SIZE}, mm::allocator::frame::{alloc_contiguous_frame, FrameTracker}};
+use crate::{config::{mm::PAGE_SIZE, task::KERNEL_STACK_SIZE}, mm::{address::{byte_array, ppn_to_phys}, allocator::frame::{alloc_contiguous_frame, FrameTracker}}};
 
 use super::trap::context::TrapContext;
 
@@ -33,6 +33,11 @@ impl Kstack {
             *ptr = trap_cx;
         }
         ptr as usize
+    }
+
+    pub fn top_trap_cx(&self) -> &TrapContext {
+        let top_addr = self.kstack_top_ptr() - core::mem::size_of::<TrapContext>();
+        unsafe { &*(top_addr as *const TrapContext)}
     }
 }
 

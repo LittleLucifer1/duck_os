@@ -3,10 +3,11 @@
 use core::cmp::{max, min};
 
 use alloc::{sync::{Arc, Weak}, vec::Vec};
+use log::debug;
 
-use crate::{config::{fs::SECTOR_SIZE, mm::PAGE_SIZE}, fs::{file::{File, FileMeta, SeekFrom}, info::{OpenFlags, TimeSpec}}};
+use crate::{config::{fs::SECTOR_SIZE, mm::PAGE_SIZE}, fs::{file::{File, FileMeta}, info::{OpenFlags, TimeSpec}}, syscall::error::{Errno, OSResult}};
 
-use super::{block_cache::get_block_cache, data, fat::{alloc_cluster, find_all_cluster, free_cluster, FatInfo}, fat_dentry::Position, fat_inode::NxtFreePos, utility::cluster_to_sector};
+use super::{block_cache::get_block_cache,fat::{alloc_cluster, find_all_cluster, free_cluster, FatInfo}, fat_dentry::Position, utility::cluster_to_sector};
 
 // TODO：这里有一个问题要仔细想一想？
 /*
@@ -36,6 +37,11 @@ impl FatDiskFile {
     }
 
     fn cal_cluster_size(&mut self, pos: Position) {
+        if pos.data_cluster == 0 {
+            // TODO:这个情况是一个偷懒的选择。当系统调用mkdir 或者 mknod时需要创建FatFile并分配data_cluster，需要将数据写入磁盘。
+            // 但是我还没有处理这种情况，同时想快速测试完系统调用，所以这里就偷懒将data_cluster分为 0;
+            return;
+        }
         let cluster = find_all_cluster(self.fat_info.clone(), pos.data_cluster);
         self.clusters.clone_from(&cluster);
         if self.size == 0 {
@@ -87,30 +93,37 @@ impl FatDiskFile {
         self.size
     }
 
-    // TODO: 再检查一下
+    // TODO: 再检查一下 这里是抄的Titanix的思路，其实可以自己实现！
+    /* Desciption:  从磁盘上把数据读到data的数组中
+        data:  接收数据的数组，其中的len比较重要
+        offset： 磁盘上文件以字节为单位的offset */
     pub fn read(&mut self, data: &mut [u8], offset: usize) -> usize {
+        // println!("The offset is {}, data_len is {}",offset, data.len());
         let st = min(offset, self.size);
         let ed = min(offset + data.len(), self.size);
         let st_cluster = st / (self.fat_info.sec_per_clus * SECTOR_SIZE);
         let ed_cluster = (ed + self.fat_info.sec_per_clus * SECTOR_SIZE - 1)
             / (self.fat_info.sec_per_clus * SECTOR_SIZE);
+        // println!("The st_cluster is {}, ed_cluster is {}", st_cluster, ed_cluster);
         for clu_id in st_cluster..ed_cluster {
             let cluster_id = self.clusters[clu_id];
+            // println!("The cluster id is {}", cluster_id);
             let sector_id = cluster_to_sector(Arc::clone(&self.fat_info), cluster_id);
             for j in 0..self.fat_info.sec_per_clus {
                 let off = clu_id * self.fat_info.sec_per_clus + j;
                 let sector_st = off * SECTOR_SIZE;
                 let sector_ed = sector_st + SECTOR_SIZE;
+                // println!("sector_st: {}, sector_ed: {}, st: {}, ed: {}", sector_st, sector_ed, st, ed);
                 if sector_ed <= st || sector_st >= ed {
                     continue;
                 }
                 let cur_st = max(sector_st, st);
                 let cur_ed = min(sector_ed, ed);
                 let mut tmp_data: [u8; SECTOR_SIZE] = [0; SECTOR_SIZE];
+                // println!("block_id is {}", sector_id + j);
                 get_block_cache(sector_id + j, Arc::clone(&self.fat_info.dev.as_ref().unwrap()))
                     .lock()
                     .read(0, |sector: &Sector|{
-                        // tmp_data = sector.data;
                         tmp_data.copy_from_slice(sector);
                 });
                 for i in cur_st..cur_ed {
@@ -121,7 +134,7 @@ impl FatDiskFile {
         ed - st
     }
 
-    // TODO: 再检查一下
+    // TODO: 再检查一下 这里是抄的Titanix的思路，其实可以自己实现！
     pub fn write(&mut self, data: &mut [u8], offset: usize, pos: Position) -> usize {
         let st = min(offset, self.size);
         let ed = min(offset + data.len(), self.size);
@@ -193,108 +206,96 @@ impl File for FatMemFile {
         &self.meta
     }
 
-    fn seek(&self, seek: SeekFrom) {
-        let mut meta_lock = self.meta.inner.lock();
-        match seek {
-            SeekFrom::Current(pos) => {
-                if pos < 0 {
-                    meta_lock.f_pos -= pos.abs() as usize;
-                } else {
-                    meta_lock.f_pos += pos as usize;
-                }
-            },
-            SeekFrom::End(pos) => {
-                // TODO: 不知道怎么处理，不知道这个data_len是什么东西！
-                meta_lock.f_pos = pos as usize;
-            },
-            SeekFrom::Start(pos) => {
-                meta_lock.f_pos += pos;
-            }
-        }
-    }
-
-    fn trucate(&self, size: usize) {
-        
-    }
-
-    // 将文件的offset(pos)之后的数据读入buf中
+    // 将文件的offset(即pos)之后的数据读入buf中
     // offset >> PAGE_SIZE: page的索引值； 后几位：page中的offset
-    // TODO：需要修改这里的data_len
-    fn read(&self, buf: &mut [u8], _flags: OpenFlags) -> Option<usize> {
-        let data_len = 0;
-        let pos = self.meta.inner.lock().f_pos;
+    // 如果读到了文件的尾，则不用再读了。
+    fn read(&self, buf: &mut [u8], flags: OpenFlags) -> OSResult<usize> {
+        if flags.contains(OpenFlags::O_PATH) {
+            debug!("[sys_read]: The flags contain O_PATH, file is not opened actually.");
+            return Err(Errno::EBADF);
+        }
+        let inode = self.meta.f_inode.clone().upgrade().unwrap();
+        let mut file_inner = self.meta.inner.lock();
+        let pos = file_inner.f_pos;
         let page_cache = Arc::clone(self.meta.page_cache.as_ref().unwrap());
-        let inode = Arc::downgrade(&self.meta.f_inode);
 
-        let max_len = buf.len().min(data_len - pos);
-        let mut buf_offset = 0 as usize;
+        let mut buf_offset = 0usize;
         let mut file_offset = pos;
         let mut total_len = 0usize;
+        let buf_len = buf.len();
         
         loop {
-            let page = page_cache.find_page(file_offset, Weak::clone(&inode));
+            let inner_lock = inode.metadata().inner.lock();
+            let file_size = inner_lock.i_size;
+            // 如果超过文件尾或者大于buf的长度，则不再读了
+            if file_size <= file_offset || buf_offset >= buf_len {
+                break;
+            }
+            let page = page_cache.find_page(file_offset, Weak::clone(&self.meta.f_inode));
             let page_offset = file_offset % PAGE_SIZE;
             let mut byte = PAGE_SIZE - page_offset;
-            if total_len + byte > max_len {
-                let old_byte = byte;
-                byte = max_len - total_len;
-                total_len += old_byte;
-            } else {
-                total_len += byte;
-            }
+            
+            byte = byte.min(buf_len - buf_offset);
+            byte = byte.min(file_size - file_offset);
+
             page.read(page_offset, &mut buf[buf_offset..buf_offset+byte]);
             buf_offset += byte;
             file_offset += byte;
-            if total_len > max_len {
-                break;
-            }
+            total_len += byte;
+            file_inner.f_pos = file_offset;
         }
+        drop(file_inner);
         // TODO: 没搞懂这个东西的逻辑
-        self.meta.f_inode.metadata().inner.lock().i_atime = TimeSpec::new();
-        self.meta.inner.lock().f_pos = file_offset;
-        // TODO: 不一定是这个值，这里没有仔细思考而随意设置的一个值
-        Some(max_len)
+        if !flags.contains(OpenFlags::O_NOATIME) {
+            inode.metadata().inner.lock().i_atime = TimeSpec::new();
+        }
+        Ok(total_len)
     }
 
     // TODO: 多个进程访问一个文件的问题？
-    fn write(&self, buf: &[u8], _flags: OpenFlags) -> Option<usize> {
-        let pos = self.meta.inner.lock().f_pos;
+    fn write(&self, buf: &[u8], flags: OpenFlags) -> OSResult<usize> {
+        if flags.contains(OpenFlags::O_PATH) {
+            debug!("[sys_write]: The flags contain O_PATH, file is not opened actually.");
+            return Err(Errno::EBADF);
+        }
+        let inode = self.meta.f_inode.clone().upgrade().unwrap();
+        // 防止其他进程修改这里的pos，统一在成功读完之后，再释放这个地方的锁
+        let mut file_inner = self.meta.inner.lock();
+        let pos = file_inner.f_pos;
         let page_cache = Arc::clone(self.meta.page_cache.as_ref().unwrap());
-        let inode = Arc::downgrade(&self.meta.f_inode);
 
-        let mut buf_offset = 0 as usize;
+        let mut buf_offset = 0usize;
         let mut file_offset = pos;
         let mut total_len = 0usize;
-        
+        let max_len = buf.len();
         loop {
-            let data_len = 0;
-            let max_len = buf.len().min(data_len - pos);
-            
-            let page = page_cache.find_page(file_offset, Weak::clone(&inode));
+            // Unsafe: 这里上了一把锁，目前感觉好像没有必要，不过如果没有问题，暂时不处理这个。
+            // let mut inner_lock = inode.metadata().inner.lock();
+            let page = page_cache.find_page(file_offset, Weak::clone(&self.meta.f_inode));
             let page_offset = file_offset % PAGE_SIZE;
             let mut byte = PAGE_SIZE - page_offset;
-            if total_len + byte > max_len {
-                let old_byte = byte;
-                byte = max_len - total_len;
-                total_len += old_byte;
-            } else {
-                total_len += byte;
+            if byte + buf_offset > max_len {
+                byte = max_len - buf_offset;
             }
             page.write(page_offset, &buf[buf_offset..buf_offset+byte]);
             buf_offset += byte;
             file_offset += byte;
-            if total_len > max_len {
+            total_len += byte;
+            
+            file_inner.f_pos = file_offset;
+            let mut inner_lock = inode.metadata().inner.lock();
+            inner_lock.i_size = inner_lock.i_size.max(file_offset);
+            if buf_offset >= max_len {
                 break;
             }
+            drop(inner_lock);
         }
-        // TODO: 没搞懂这个东西的逻辑
-        let mut inner_lock = self.meta.f_inode.metadata().inner.lock();
+        drop(file_inner);
+        let mut inner_lock = inode.metadata().inner.lock();
         inner_lock.i_atime = TimeSpec::new();
         inner_lock.i_ctime = inner_lock.i_atime;
         inner_lock.i_mtime = inner_lock.i_atime;
-        self.meta.inner.lock().f_pos = file_offset;
-        // TODO: 随意设置的一个值
-        Some(total_len)
+        Ok(total_len)
     }
 }
 

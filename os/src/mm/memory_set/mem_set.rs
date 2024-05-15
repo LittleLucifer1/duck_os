@@ -22,12 +22,22 @@
         还有一些莫名奇妙的函数，反正先不管吧，那些函数也是需要去看大量代码才能理解的，先实现一些通用的功能。
 */
 
+use alloc::sync::Arc;
 use log::info;
 use riscv::register::scause::Scause;
 
 use crate::{
-    config::{mm::{LOW_LIMIT, MEMORY_END, PAGE_SIZE, PHY_TO_VIRT_OFFSET, USER_UPPER_LIMIT}, task::{CORE_STACK_SIZE, MAX_CORE_NUM}}, console::print, driver::qemu::MMIO, mm::{address::{align_down, virt_to_vpn}, cow::CowManager, page_table::PageTable, type_cast::{MapPermission, PTEFlags}, vma::{MapType, VirtMemoryAddr, VmaType}, vma_range::vma_range::VmaRange}, stack_trace, utils::{cell::SyncUnsafeCell, stack_trace}
+    config::{
+        mm::{LOW_LIMIT, MEMORY_END, PAGE_SIZE, PHY_TO_VIRT_OFFSET, USER_UPPER_LIMIT}, 
+        task::{CORE_STACK_SIZE, MAX_CORE_NUM}
+    }, driver::qemu::MMIO, mm::{
+        address::{align_down, byte_array, phys_to_ppn, ppn_to_phys, virt_to_vpn, vpn_to_virt}, cow::CowManager, page_table::PageTable, 
+        pma::BackenFile, type_cast::{MapPermission, PTEFlags}, 
+        vma::{MapType, VirtMemoryAddr, VmaType}, vma_range::vma_range::VmaRange
+    }, syscall::error::{Errno, OSResult}, utils::cell::SyncUnsafeCell
 };
+
+use super::page_fault::PageFaultHandler;
 
 
 pub struct MemeorySet {
@@ -36,7 +46,7 @@ pub struct MemeorySet {
     // 底下没有数据结构拥有页表，所以不用Arc，没有多个所有者
     // pt的借用关系难以管理，所以使用cell,但是为什么要使用sync? (一般情况下在多线程中传递引用)
     pub pt: SyncUnsafeCell<PageTable>,
-    pub heap_start: usize,
+    pub heap_end: usize,
     // is_user: bool,
     // pub heap_range
     pub cow_manager: CowManager,
@@ -84,7 +94,7 @@ impl MemeorySet {
         let mut kernel_memory_set = MemeorySet {
             areas: VmaRange::new(), 
             pt: SyncUnsafeCell::new(PageTable::new()),
-            heap_start: 0,
+            heap_end: 0,
             cow_manager: CowManager::new()
         };
 
@@ -222,7 +232,7 @@ impl MemeorySet {
         Self {
             areas: VmaRange::new(),
             pt,
-            heap_start: 0,
+            heap_end: 0,
             cow_manager: CowManager::new(),
         }
     }
@@ -237,14 +247,15 @@ impl MemeorySet {
 
     // 分配一个vma空壳
     // 从vma_range中找到合适的start
-    // TODO：还没考虑 back_file  后续应该要考虑修改构造vma的形式
     pub fn alloc_vma_anywhere(
         &self, 
         hint: usize, 
         len: usize, 
         map_permission: MapPermission,
-        map_type: MapType
+        map_type: MapType,
+        handler: Option<Arc<dyn PageFaultHandler>>,
     ) -> Option<VirtMemoryAddr> {
+        // TODO: if end == start ???? DONE：其实并没有关系，只是不会做映射！
         self.areas.find_anywhere(hint, len).map(|start_va| {
             VirtMemoryAddr::new(
                 start_va,
@@ -252,21 +263,22 @@ impl MemeorySet {
                 map_permission,
                 map_type,
                 VmaType::Mmap,
-                None
+                handler,
             )
         })
     }
 
     // 分配 固定虚拟地址 的vma空壳
     // 非 Direct 类型
-    // TODO： 还没考虑 back_file  后续应该要考虑修改构造vma的形式
     pub fn alloc_vma_fixed(
         &mut self,
         start: usize, 
         end: usize,
         map_permission: MapPermission,
         map_type: MapType,
+        handler: Option<Arc<dyn PageFaultHandler>>,
     ) -> Option<VirtMemoryAddr> {
+        // TODO: if end == start ???? DONE：其实并没有关系，只是不会做映射！
         self.areas.find_fixed(start, end, self.pt.get_unchecked_mut()).map(|start_va| {
             VirtMemoryAddr::new(
                 start_va,
@@ -274,7 +286,7 @@ impl MemeorySet {
                 map_permission,
                 map_type,
                 VmaType::Mmap,
-                None
+                handler,
             )
         })
     }
@@ -284,6 +296,7 @@ impl MemeorySet {
     */ 
     pub fn push(&mut self, vm_area: VirtMemoryAddr, data: Option<&[u8]>, offset: usize) {
         vm_area.map_all(self.pt.get_unchecked_mut());
+        // 如果是elf文件，则需要将某个段中的data内容放入物理页帧中
         if data.is_some() {
             vm_area.copy_data(&data.unwrap(), offset, self.pt.get_unchecked_mut());
         }
@@ -295,8 +308,29 @@ impl MemeorySet {
         self.areas.insert_raw(vm_area);
     }
 
+    pub fn mmap(
+        &mut self,
+        vma: VirtMemoryAddr,
+        backen_file: Option<BackenFile>,
+    ) -> Option<usize> {
+        let start_addr = vma.start_vaddr;
+        if backen_file.is_some() {
+            vma.pma.get_unchecked_mut().add_backen_file(backen_file.unwrap());
+        }
+        self.push_no_map(vma);
+        Some(start_addr)
+    }
+
     pub fn mprotect(&mut self, start: usize, end: usize, new_flags: MapPermission) {
         self.areas.mprotect(start, end, new_flags, &mut self.pt.get_unchecked_mut())
+    }
+
+    pub fn munmap(&mut self, start: usize, end: usize) {
+        self.areas.unmap(start, end, &mut self.pt.get_unchecked_mut())
+    }
+
+    pub fn expand(&mut self, start: usize, end: usize) ->OSResult<bool> {
+        self.areas.expand(start, end)
     }
 
     pub fn find_vm_mut_by_vpn(&mut self, vpn: usize) -> Option<&mut VirtMemoryAddr> {
@@ -315,7 +349,7 @@ impl MemeorySet {
         }
     }
 
-    pub fn find_vm_by_vaddr(&self, vaddr: usize) -> Option<& VirtMemoryAddr> {
+    pub fn find_vm_by_vaddr(&self, vaddr: usize) -> Option<&VirtMemoryAddr> {
         if let Some((_, vma)) = 
             self.areas
                 .segments
@@ -328,29 +362,37 @@ impl MemeorySet {
         }
     }
 
-    pub fn handle_page_fault(&self, vaddr: usize, scause: Scause) {
+    pub fn handle_page_fault(&self, vaddr: usize, scause: Scause) -> OSResult<()>{
+        for (_, area) in self.areas.segments.iter() {
+            info!("Vma area from {:#x} ~ {:#x}", area.start_vaddr, area.end_vaddr);
+        }
         if let Some(vma) = self.find_vm_by_vaddr(vaddr) {
-                vma.handle_page_fault(vaddr, self.pt.get_unchecked_mut())
+                vma.handle_page_fault(vaddr, self.pt.get_unchecked_mut(), scause);
+                Ok(())
             }
         // 对应的虚拟地址没有对应的虚拟地址空间！
         else {
-            todo!()
+            info!("[handler_page_fault]: No corresponding vma in mem_set. va is {:x}", vaddr);
+            for (_, area) in self.areas.segments.iter() {
+                info!("Vma area from {:#x} ~ {:#x}", area.start_vaddr, area.end_vaddr);
+            }
+            Err(Errno::EFAULT)
         }
     }
 
     // 在fork, clone, exec 等系统调用中，用于创建一个新的地址空间。
     // 同时做好 COW （copy-on-write）
-    pub fn from_user_lazily(another_ms: &Self) -> Self {
+    pub fn from_user_lazily(&self) -> Self {
         let mut ms = MemeorySet::new_user();
         ms.cow_manager.from_other_cow(
-            &another_ms.cow_manager, 
+            &self.cow_manager, 
             &mut ms.pt.get_unchecked_mut()
         );
-        for (_, vma) in another_ms
+        for (_, vma) in self
             .areas
             .segments
             .iter() {
-                // 复制一模一样的虚拟逻辑段 TODO：有没有可能虚拟地址会重合？？？
+                // 复制一模一样的虚拟逻辑段 TODO：有没有可能虚拟地址会重合？？？ 重合没有关系
                 let new_vma = VirtMemoryAddr::from_another(&vma);
                 for vpn in vma.vma_range() {
                     if let Some(page) = vma
@@ -359,7 +401,7 @@ impl MemeorySet {
                         .page_manager
                         .get(&vpn) {
                             // 这里存在 physical frame，所以要做一个特殊的映射
-                            let old_pte = another_ms
+                            let old_pte = self
                                 .pt
                                 .get_unchecked_mut()
                                 .find_pte(vpn)
@@ -374,7 +416,7 @@ impl MemeorySet {
                                 .page_manager
                                 .get_unchecked_mut()
                                 .insert(vpn, page.clone());
-                            another_ms.cow_manager
+                            self.cow_manager
                                 .page_manager
                                 .get_unchecked_mut()
                                 .insert(vpn, page.clone());
@@ -389,10 +431,33 @@ impl MemeorySet {
         ms
     }
 
+    pub fn from_user(&self) -> Self {
+        let mut ms = MemeorySet::new_user();
+        for (_, vma) in self
+            .areas
+            .segments
+            .iter() {
+                let new_vma = VirtMemoryAddr::from_another(&vma);
+                for vpn in vma.vma_range() {
+                    if let Some(pa) = self.pt.get_unchecked_mut().translate_va_to_pa(vpn_to_virt(vpn)) {
+                        let src_ppn = phys_to_ppn(pa);
+                        let dst_ppn = new_vma.map_one(ms.pt.get_unchecked_mut(), vpn, None);
+                        byte_array(ppn_to_phys(dst_ppn)).copy_from_slice(&byte_array(ppn_to_phys(src_ppn)));
+                    }
+                }
+            ms.push_no_map(new_vma);
+        }
+        ms.heap_end = self.heap_end;
+        ms
+    }
+
     /* Function: 清理用户地址空间中的数据
      */
     pub fn clear_user_space(&mut self) {
-        self.areas.unmap(LOW_LIMIT, USER_UPPER_LIMIT, self.pt.get_mut())
+        self.areas.unmap(LOW_LIMIT, USER_UPPER_LIMIT, self.pt.get_mut());
+        // self.pt.get_unchecked_mut().activate();
+        // TODO: 待修改
+        self.heap_end = 0;
     }
 
 }

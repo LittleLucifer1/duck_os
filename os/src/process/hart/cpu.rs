@@ -5,7 +5,7 @@ use core::arch;
 use alloc::{sync::Arc, vec::Vec};
 use log::*;
 
-use crate::{config::task::MAX_CORE_NUM, mm::memory_set::mem_set::kernel_space_activate, process::{context::TaskContext, pcb::{TaskStatus, PCB}, schedule::{pop_task_from_schedule, push_task_to_schedule}, switch::__switch, ORIGIN_TASK}, sbi, sync::SpinLock};
+use crate::{board::{QEMUExit, QEMU_EXIT_HANDLE}, config::task::MAX_CORE_NUM, mm::memory_set::mem_set::kernel_space_activate, process::{self, context::TaskContext, init_task_and_push, pcb::{TaskStatus, PCB}, schedule::{pop_task_from_schedule, push_task_to_schedule}, switch::{__switch, __switch_to_idle}, ORIGIN_TASK, TESTCASE}, sbi::{self, sbi_qemu_shutdown}, sync::SpinLock};
 
 use super::env::Env;
 
@@ -29,7 +29,7 @@ impl CpuLocal {
         &mut self.idle_cx as *mut _
     }
 
-    pub fn current_pcb(&self) -> Option<Arc<PCB>> {
+    pub fn current_pcb_clone(&self) -> Option<Arc<PCB>> {
         self.current.as_ref().map(Arc::clone)
     }
 
@@ -48,29 +48,22 @@ pub fn run_task() {
             task.set_status(TaskStatus::Running);
             task.vm.lock().activate(); // 切换用户进程地址空间
             cpu_local.current = Some(task);
-            println!("Ready to go to user space");
+            // println!("Ready to go to user space");
             unsafe {
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
             kernel_space_activate(); // 切换回内核地址空间
-            println!("Welcome back! This is duck os!");
-            loop {}
-            // if let Some(task) = CPULOCALS[cpu_id].lock().take_current_pcb() {
-            //     match task.status() {
-            //         TaskStatus::Ready => {
-            //             push_task_to_schedule(task);
-            //         },
-            //         TaskStatus::Dead => {
-
-            //         }
-            //         TaskStatus::Interruptible => {
-
-            //         },  
-            //         _ => {
-
-            //         }
-            //     }
-            // }
+            // println!("Welcome back! This is duck os!");
+        }
+        #[cfg(feature="preliminary")]
+        if process::schedule::is_empty() {
+            unsafe {
+                if TESTCASE.is_empty() {
+                    sbi_qemu_shutdown();
+                } else {
+                    init_task_and_push(TESTCASE.pop().unwrap());
+                }
+            }
         }
     }
 }
@@ -94,7 +87,7 @@ pub fn suspend_current_task() {
 pub fn exit_current_task(exit_code: i32) {
     let cpu_id = get_cpu_id();
     let cpu_local = get_mut_cpu_local(cpu_id);
-    let task = cpu_local.current_pcb().unwrap();
+    let task = cpu_local.take_current_pcb().unwrap();
     task.set_status(TaskStatus::Dead);
     task.set_exit_code(exit_code);
 
@@ -112,7 +105,15 @@ pub fn exit_current_task(exit_code: i32) {
             }
         }
     }
+    drop(task_inner);
     task.clear_child();
+    // task.clear_fd_table();
+    // task.clear_user_space();
+    drop(task);
+    let idle_task_cx_ptr = cpu_local.idle_cx_ptr();
+    unsafe {
+        __switch_to_idle(idle_task_cx_ptr);
+    }
     // 剩下的步骤有：释放文件描述符、内存中的数据、发送信号
     // 这里是利用了rust语言的特性，当在wait函数中，task会被drop，且Arc的计数为1
     // 所有的资源都会被自动释放，不需要手动去释放文件描述符和内存中的数据。但是也可以自己手动释放。

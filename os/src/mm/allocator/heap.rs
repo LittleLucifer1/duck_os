@@ -2,11 +2,34 @@
     堆分配器，使用buddy_system中的Locked_Heap.
     TODO： 暂时先这样，之后可能要更改锁的类型
 */
-
 use buddy_system_allocator::LockedHeap;
 use crate::config::mm::KERNEL_HEAP_SIZE;
 
+
+// struct GlobalHeap(SpinNoIrqLock<Heap::<32>>);
+
+// impl GlobalHeap {
+//     const fn empty() -> Self {
+//         Self(SpinNoIrqLock::new(Heap::empty()))
+//     }
+// }
+
+// unsafe impl GlobalAlloc for GlobalHeap {
+//     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+//         self.0
+//             .lock()
+//             .alloc(layout)
+//             .ok()
+//             .map_or(0 as *mut u8, |allocation| allocation.as_ptr())
+//     }
+
+//     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+//         self.0.lock().dealloc(NonNull::new_unchecked(ptr), layout)
+//     }
+// }
+
 #[global_allocator]
+// static HEAP_ALLOCATOR: GlobalHeap = GlobalHeap::empty();
 static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::new();
 
 // Initial the heap

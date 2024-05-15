@@ -30,12 +30,13 @@ use core::ops::Range;
 
 use crate::{config::mm::PAGE_SIZE, utils::cell::SyncUnsafeCell};
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
+use riscv::register::scause::Scause;
 
 use crate::config::mm::PHY_TO_VIRT_PPN_OFFSET;
 
 use super::{
-    address::{align_down, align_up, byte_array, ppn_to_phys, vaddr_offset, virt_to_vpn, VirtAddr}, 
+    address::{align_down, align_up, byte_array, ppn_to_phys, virt_to_vpn, VirtAddr}, 
     memory_set::page_fault::PageFaultHandler, 
     page_table::PageTable, 
     pma::{Page,  PhysMemoryAddr}, 
@@ -175,9 +176,9 @@ impl VirtMemoryAddr {
         }
     }
 
-    pub fn handle_page_fault(&self, vaddr: VirtAddr, pt: &mut PageTable) {
+    pub fn handle_page_fault(&self, vaddr: VirtAddr, pt: &mut PageTable, scause: Scause) {
         self.page_fault_handler.as_ref().map(|handler| {
-            handler.handler_page_fault(self, vaddr, None, pt)
+            handler.handler_page_fault(self, vaddr, None, scause, pt)
         });
     }
 
@@ -215,13 +216,18 @@ impl VirtMemoryAddr {
             current_va += PAGE_SIZE;
         }
     }
+
+    pub fn is_backen_file(&self) -> bool {
+        self.pma.get_unchecked_mut().backen_file.is_some()
+    }
 }
 
 
 // 区间相关的操作
 impl VirtMemoryAddr {
     // 修改这段区间的flags
-    // TODO: 无法修改页面的flags!
+    // TODO: 无法修改页面的flags，暂时不考虑修改页面的flags吧，最多把映射相关的pte改掉！
+    // 因为现在的实现中，不需要判断page flags的值。这个属性没啥用！
     // Titanix中，貌似这里只修改了map_permission，其他的一律没有修改。
     pub fn modify(&mut self, new_flags: MapPermission, pt: &mut PageTable) {
         // 修改了区间的
@@ -240,6 +246,11 @@ impl VirtMemoryAddr {
         for vpn in virt_to_vpn(self.start_vaddr)..virt_to_vpn(self.end_vaddr) {
             self.unmap(pt, vpn)
         }
+    }
+
+    // 扩展地址空间,目前只有brk使用了这个函数,并且只想高处扩展,同时不会分配相关的物理页面 + 也不会映射相关的地址
+    pub fn expand(&mut self, new_end: usize) {
+        self.end_vaddr = new_end;
     }
 
     // 分裂为[start, pos），并返回[pos, end)
@@ -266,9 +277,11 @@ impl VirtMemoryAddr {
     }
 
     pub fn unmap_if_overlap(&mut self, start: usize, end: usize, pt: &mut PageTable) -> UnmapOverlap {
+        let start = align_down(start);
+        let end = align_up(end);
         if !self.is_overlap(start, end) {
             UnmapOverlap::Unchange
-        } else if start < self.start_vaddr {
+        } else if start <= self.start_vaddr {
             if end < self.end_vaddr {
                 // 左边相交
                 let right_vma = self.split(end);
@@ -292,10 +305,10 @@ impl VirtMemoryAddr {
         }
     }
 
-    pub fn split_if_overlap(&mut self, start: usize, end: usize, new_flags: MapPermission, pt: &mut PageTable) -> SplitOverlap {
+    pub fn split_and_modify_if_overlap(&mut self, start: usize, end: usize, new_flags: MapPermission, pt: &mut PageTable) -> SplitOverlap {
         if !self.is_overlap(start, end) {
             SplitOverlap::Unchange
-        } else if start < self.start_vaddr {
+        } else if start <= self.start_vaddr {
             if end < self.end_vaddr {
                 // 左边相交 修改左边的值，再把右边的返回出去
                 let right_vma = self.split(end);
@@ -322,6 +335,6 @@ impl VirtMemoryAddr {
 
     pub fn is_overlap(&self, start: usize, end: usize) -> bool {
         assert!(start <= end);
-        !(end < self.start_vaddr || start > self.end_vaddr)
+        !(end <= self.start_vaddr || start >= self.end_vaddr)
     }
 }

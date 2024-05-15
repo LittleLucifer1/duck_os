@@ -7,6 +7,7 @@ use core::arch::asm;
 
 // (EID, FID)
 const SBI_CONSOLE_PUTCHAR: (usize, usize) = (1, 0);
+const SBI_CONSOLE_GETCHAR: (usize, usize) = (2, 0);
 const SBI_HART_START: (usize, usize) = (0x48534d, 0);
 
 /// general sbi call
@@ -31,11 +32,28 @@ pub fn console_putchar(c: usize) {
     sbi_call(SBI_CONSOLE_PUTCHAR, c, 0, 0);
 }
 
+pub fn console_getchar() -> u8 {
+    sbi_call(SBI_CONSOLE_GETCHAR, 0, 0, 0) as u8
+}
+
 // TODO： 这里暂时使用qemu中的exit.其实可以使用sbi_call()来终止。
 use crate::board::QEMUExit;
 pub fn shutdown() -> ! {
     crate::board::QEMU_EXIT_HANDLE.exit_failure();
 }
+
+pub fn sbi_qemu_shutdown() -> ! {
+    const SBI_SHUTDOWN: usize = 8;
+    unsafe {
+        asm!(
+            "mv a7, {0}",
+            "ecall",
+            in(reg) SBI_SHUTDOWN,
+            options(noreturn)
+        );
+    }
+}
+
 
 /// use sbi call to start the specific core
 pub fn hart_start(hart_id: usize, start_addr: usize) -> usize {

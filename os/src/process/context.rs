@@ -22,7 +22,7 @@ impl TaskContext {
 
     /* 普通的用户任务上下文切换
     1. 默认ra： __restore，即准备返回用户态
-    2. 默认sp：内核栈指针，用于存储trap_cx信息，当返回内核态时，可以拿到相关的信息
+    2. 默认sp：用户内核栈指针，用于存储trap_cx信息，当返回内核态时，可以拿到相关的信息
     */ 
     pub fn init_task_cx(kernel_stack: usize) -> Self {
         extern "C" {

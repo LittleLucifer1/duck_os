@@ -6,11 +6,10 @@ use hashbrown::HashMap;
 
 use crate::{
     fs::{
-        dentry::dentry_name, 
         info::{InodeMode, TimeSpec}, 
         inode::{BlockDevWrapper, Inode, InodeDev, InodeMeta}
     },
-    sync::SpinLock
+    sync::SpinLock, utils::path::dentry_name
 };
 
 use super::{data::{DirAttr, ShortDirEntry}, fat::FatInfo, fat_dentry::Position, fat_file::FatDiskFile};
@@ -136,15 +135,17 @@ impl FatInode {
             pos: Position::new_from_nxtpos(pos, data_clu),
             fat_info: Arc::clone(&fat_info),
             fat_file: SpinLock::new(FatDiskFile::init(
-                Arc::clone(&fat_info), Position::new_from_nxtpos(pos, data_clu))
+                Arc::clone(&fat_info), 
+                Position::new_from_nxtpos(pos, data_clu)
+                )
             )
-         }
+        }
     }
 
     // TODO: 应该要返回新的 pos，以便于重新插入到cache中
-    // TODO: 这里的操作涉及磁盘的写，或许用不到？
-    pub fn write_dentry(_pos: NxtFreePos, _name: &str) -> (NxtFreePos, usize) {
-        (NxtFreePos::empty(), 0)
+    // TODO: 这里的操作涉及磁盘的写，或许暂时用不到？
+    pub fn write_dentry(pos: NxtFreePos, _name: &str) -> (NxtFreePos, usize) {
+        (pos, 0)
     }
 
     // 创建目录，需要在磁盘上写入相关的数据
@@ -188,8 +189,9 @@ impl FatInode {
             .unwrap()
             .get(&fa.metadata().i_ino)
             .cloned();
+        // println!("fa ino:{}", fa.metadata().i_ino);
         if pos.is_none() {
-            todo!();
+            todo!()
         } else {
             nxt_pos = pos.unwrap();
         }
@@ -220,6 +222,7 @@ impl NxtFreePosCache {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+// 只有目录会在NXT_POS_CACHE中有这个数据，
 pub struct NxtFreePos {
     // 记录着下一个内容cluster中可以分配具体位置
     pub cluster: usize,

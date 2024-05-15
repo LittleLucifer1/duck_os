@@ -11,12 +11,13 @@
         5） 页表的token
 */
 
-use core::arch::asm;
+use core::{arch::asm, fmt::Debug};
 use alloc::vec::Vec;
 use alloc::vec;
-use riscv::register::satp::{self};
+use log::{debug, info};
+use riscv::{addr::BitField, register::satp};
 
-use crate::config::mm::KERNEL_PTE_POS;
+use crate::config::mm::{KERNEL_MMIO_PTE_POS, KERNEL_PTE_POS};
 
 use super::{
     address::{phys_to_ppn, ppn_to_phys, pte_array, vaddr_offset, vaddr_to_pte_vpn, virt_to_vpn, vpn_to_virt, PhysAddr, VirtAddr}, 
@@ -29,6 +30,15 @@ use super::{
 #[repr(C)]
 pub struct PageTableEntry {
     pub pte: usize,
+}
+
+impl Debug for PageTableEntry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("PageTableEntry is ppn2: 0x{:x}, ppn1: 0x{:x}, ppn0: 0x{:x}, flags: {:?}",
+            (self.pte >> 28 & 0x1ff), (self.pte >> 19 & 0x1ff), (self.pte >> 10 & 0x1ff),
+            PTEFlags::from_bits((self.pte & 0x1ff) as u16).unwrap()
+    ))
+    }
 }
 
 /// pte中不同位的操作 设置位、判断位、初始化
@@ -80,7 +90,7 @@ impl PageTableEntry {
         self.flags().contains(PTEFlags::U)
     }
 
-    ///
+    /// Unsafe：这里要确保flags是一个合法的PTEFlags
     pub fn set_flags(&mut self, flags: PTEFlags) {
         let new_flags = flags.bits() as usize;
         self.pte = (self.ppn() << 10 ) | new_flags;
@@ -103,8 +113,6 @@ impl PageTable {
     }
 
     /// 需要一个全局变量KERNEL 然后要做映射
-    /// TODO: 是否可以直接访问物理地址拿到想要的数据？？
-    /// TODO：同时是否是在第 258项？？
     pub fn new_user() -> Self {
         let frame = alloc_frame().unwrap();
         let kernel_root_paddr = unsafe {
@@ -119,7 +127,10 @@ impl PageTable {
         };
         let user_pte_array = pte_array(ppn_to_phys(frame.ppn));
         let kernel_pte_array = pte_array(kernel_root_paddr);
+        // Unsafe: 如果之后添加相关的地址空间时，需要对此处的pte进行修改，否则用户程序可能会丢失内核部分的地址空间区域。
+        // 或许可以更加精细化一些! 因为我这里映射的空间远小于pte表对应的地址空间大小。
         (*user_pte_array)[KERNEL_PTE_POS] = (*kernel_pte_array)[KERNEL_PTE_POS];
+        (*user_pte_array)[KERNEL_MMIO_PTE_POS] = (*kernel_pte_array)[KERNEL_MMIO_PTE_POS];
         PageTable { root_paddr: ppn_to_phys(frame.ppn), frames: vec![frame] }
     }
 
@@ -138,15 +149,16 @@ impl PageTable {
 
     /// activate page_table
     pub fn activate(&self) {
-        // TODO: 不知道有没有逻辑问题？
-        let old_satp = satp::read().ppn();
-        if old_satp != self.root_ppn() {
-            let satp = self.token();
-            unsafe {
-                satp::write(satp);
-                asm!("sfence.vma");
-            }
+        // TODO: 不知道有没有逻辑问题？ DONE: 有时候我就是想刷本进程的页表！而不是切换页表！
+        // TODO：这样子做是必要的吗？
+        // let old_satp = satp::read().ppn();
+        // if old_satp != self.root_ppn() {
+        let satp = self.token();
+        unsafe {
+            satp::write(satp);
+            asm!("sfence.vma");
         }
+        // }
     }
 
     /// 找页表项 如果没有则创建一个 返回物理页号
@@ -191,16 +203,20 @@ impl PageTable {
     pub fn map_one(&mut self, vpn: usize, ppn: usize, flags: PTEFlags) {
         let pte = self.find_pte_create(vpn_to_virt(vpn));
         if pte.is_valid() {
-            panic!("The corresponding pte is not valid.");
+            info!("The vpn 0x{:x}, ppn 0x{:x}, pte: {:#?}", vpn, ppn, pte);
+            panic!("The corresponding pte is valid.");
         }
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::A | PTEFlags::D | PTEFlags::V);
     }
 
     /// 解除映射
     pub fn unmap(&self, vpn: usize) {
-        let pte = self.find_pte(vpn_to_virt(vpn)).unwrap();
-        assert!(pte.is_valid(), "vpn {:?} is invalid before unmap", vpn);
-        *pte = PageTableEntry::empty();
+        if let Some(pte) = self.find_pte(vpn_to_virt(vpn)) {
+            assert!(pte.is_valid(), "vpn {:?} is invalid before unmap", vpn);
+            *pte = PageTableEntry::empty();
+        } else {
+            debug!("No pte of vpn {:#x}", vpn);
+        }
     }
 
     /// 由vpn查找pte
@@ -226,7 +242,10 @@ impl PageTable {
 
     pub fn modify_flags(&self, vpn: usize, flags: PTEFlags) {
         let mut pte = self.translate_vpn_to_pte(vpn).unwrap();
-        pte.set_flags(flags);
+        // 只需要修改UXWR四位
+        for i in 1..=4 {
+            pte.pte.set_bit(i,flags.bits().get_bit(i));
+        }
     }
 
 }

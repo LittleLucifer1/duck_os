@@ -1,9 +1,9 @@
 //! fat32文件系统中的data部分
 
-use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, string::{String, ToString}, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 
-use crate::{fs::{dentry::{DentryMeta, DentryMetaInner}, fat32::data, info::TimeSpec, inode::Inode}, sync::SpinLock};
+use crate::{fs::{dentry::{DentryMeta, DentryMetaInner}, info::TimeSpec, inode::Inode}, sync::SpinLock};
 
 use super::{
     fat::FatInfo, 
@@ -182,7 +182,7 @@ pub fn parse_s_name(dir_pos: &(DirEntry, Position), fat_info: Arc<FatInfo>) -> F
                     d_path: "".to_string(),
                     d_inode: inode_rc,
                     d_parent: None,
-                    d_child: Vec::new(),
+                    d_child: BTreeMap::new(),
                 }
             ) 
         },
@@ -202,7 +202,6 @@ pub fn parse_l_name(dir_pos: &[(DirEntry, Position)], fat_info: Arc<FatInfo>) ->
         let l_dir = change_to_long_dentry(dir);
         dname.push_str(&l_dir.bit_to_name());
     }
-    println!("The dname is {:?}", dname);
     let data_clus: u32 = short_entry.fst_clus_lo as u32 | (short_entry.fst_clus_hi as u32 ) << 16;
     let pos =  Position {
         self_cluster: s_dir_pos.1.self_cluster,
@@ -220,7 +219,7 @@ pub fn parse_l_name(dir_pos: &[(DirEntry, Position)], fat_info: Arc<FatInfo>) ->
                     d_path: "".to_string(),
                     d_inode: inode,
                     d_parent: None,
-                    d_child: Vec::new(),
+                    d_child: BTreeMap::new(),
                 }
             ) 
         },

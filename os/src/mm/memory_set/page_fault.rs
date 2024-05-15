@@ -1,5 +1,4 @@
 //! 专门处理多种不同的 page_fault
-
 /*
     1. page_fault种类
         1） sbrk
@@ -8,10 +7,10 @@
         4)  user_heap
 */
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use riscv::register::scause::Scause;
 
-use crate::mm::{address::{virt_to_vpn, VirtAddr}, page_table::PageTable, pma::Page, type_cast::{PTEFlags, PagePermission}, vma::VirtMemoryAddr};
+use crate::mm::{address::{virt_to_vpn, VirtAddr}, page_table::PageTable, pma::Page, type_cast::{MapPermission, PTEFlags, PagePermission}, vma::VirtMemoryAddr};
 
 use super::mem_set::MemeorySet;
 
@@ -20,14 +19,15 @@ pub trait PageFaultHandler: Send + Sync {
     // 所以只需要 映射 + 将分配的物理帧插入对应的 vma 中
     fn handler_page_fault(
         &self,
-        vma: &VirtMemoryAddr,
-        vaddr: VirtAddr,
-        ms: Option<&MemeorySet>,
-        pt: &mut PageTable,
+        _vma: &VirtMemoryAddr,
+        _vaddr: VirtAddr,
+        _ms: Option<&MemeorySet>,
+        _scause: Scause,
+        _pt: &mut PageTable,
     ) {}
 
     // TODO: 这个部分需要去参考手册，目前不懂
-    fn is_legal(&self, scause: Scause) -> bool {
+    fn is_legal(&self, _scause: Scause) -> bool {
         todo!()
     }
 }
@@ -36,26 +36,31 @@ pub trait PageFaultHandler: Send + Sync {
 pub struct UStackPageFaultHandler {}
 
 impl PageFaultHandler for UStackPageFaultHandler {
+    // TODO: 考虑到空间的局部连续性，其实可以往地址后面连续的多分几页!
     fn handler_page_fault(
             &self,
             vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
             _ms: Option<&MemeorySet>,
+            _scause: Scause,
             pt: &mut PageTable,
         ) {
         let page = Page::new(PagePermission::from(vma.map_permission));
+        let ppn = page.frame.ppn;
+        let vpn = virt_to_vpn(vaddr);
         vma.pma
             .get_unchecked_mut()
             .page_manager
             .insert(
-                virt_to_vpn(vaddr), 
+                vpn,
                 Arc::new(page),
             );
-        vma.map_all(pt);
+        let flag = PTEFlags::W | PTEFlags::R | PTEFlags::U;
+        pt.map_one(vpn, ppn, flag);
         pt.activate();
     }
 
-    fn is_legal(&self, scause: Scause) -> bool {
+    fn is_legal(&self, _scause: Scause) -> bool {
         todo!()
     }
 }
@@ -68,12 +73,25 @@ impl PageFaultHandler for UHeapPageFaultHandler {
             &self,
             vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
-            ms: Option<&MemeorySet>,
+            _ms: Option<&MemeorySet>,
+            _scause: Scause,
             pt: &mut PageTable,
         ) {
-        todo!()
+            let page = Page::new(PagePermission::from(vma.map_permission));
+            let ppn = page.frame.ppn;
+            let vpn = virt_to_vpn(vaddr);
+            vma.pma
+                .get_unchecked_mut()
+                .page_manager
+                .insert(
+                    vpn, 
+                    Arc::new(page),
+                );
+            let flag = PTEFlags::W | PTEFlags::R | PTEFlags::U | PTEFlags::X;
+            pt.map_one(vpn, ppn, flag);
+            pt.activate();
     }
-    fn is_legal(&self, scause: Scause) -> bool {
+    fn is_legal(&self, _scause: Scause) -> bool {
         false
     }
 }
@@ -81,19 +99,62 @@ impl PageFaultHandler for UHeapPageFaultHandler {
 #[derive(Clone)]
 pub struct MmapPageFaultHandler {}
 
-// TODO：有点复杂，暂时不完成，需要完成文件的回写。
+// TODO：如果我有一个MemorySet
 impl PageFaultHandler for MmapPageFaultHandler {
     fn handler_page_fault(
             &self,
             vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
-            _ms: Option<&MemeorySet>,
+            _vm: Option<&MemeorySet>,
+            _scause: Scause,
             pt: &mut PageTable,
         ) {
-        
+        let map_permission = vma.map_permission;
+        // 2. 如果有backen file，则从文件的page cache中拿出page，同时将文件中的内容放入其中
+        if vma.is_backen_file() {
+            let backen_file = vma.pma.get_unchecked_mut().backen_file.as_ref().unwrap().clone();
+            let offset = backen_file.offset + vaddr - vma.start_vaddr;
+            let inode = Weak::clone(&backen_file.file.metadata().f_inode);
+            let page = backen_file
+                .file
+                .metadata()
+                .page_cache
+                .as_ref()
+                .unwrap()
+                .find_page(offset, inode);
+            page.load();
+            let ppn = page.frame.ppn;
+            let vpn = virt_to_vpn(vaddr);
+            vma.pma
+                .get_unchecked_mut()
+                .page_manager
+                .insert(
+                    vpn, 
+                    Arc::clone(&page),
+                );
+            pt.map_one(vpn, ppn, map_permission.into());
+            pt.activate()
+        }
+        // 1. 如果没有backen file，则分配一个空页面
+        else {
+            let page = Page::new(PagePermission::from(map_permission));
+            let ppn = page.frame.ppn;
+            let vpn = virt_to_vpn(vaddr);
+            vma.pma
+                .get_unchecked_mut()
+                .page_manager
+                .insert(
+                    vpn, 
+                    Arc::new(page),
+                );
+            // DONE: 这里的PTE是根据 prot来设置的，暂时没有检查这部分的内容; 应该没有什么问题
+            let flag = map_permission.into();
+            pt.map_one(vpn, ppn, flag);
+            pt.activate();
+        }
     }
 
-    fn is_legal(&self, scause: Scause) -> bool {
+    fn is_legal(&self, _scause: Scause) -> bool {
         todo!()
     }
 }
@@ -105,9 +166,10 @@ pub struct CowPageFaultHandler {}
 impl PageFaultHandler for CowPageFaultHandler {
     fn handler_page_fault(
             &self,
-            vma: &VirtMemoryAddr,
+            _vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
             ms: Option<&MemeorySet>,
+            _scause: Scause,
             pt: &mut PageTable,
         ) {
         let pte = pt.find_pte(vaddr).unwrap();
@@ -149,7 +211,7 @@ impl PageFaultHandler for CowPageFaultHandler {
         
     }
 
-    fn is_legal(&self, scause: Scause) -> bool {
+    fn is_legal(&self, _scause: Scause) -> bool {
         todo!()
     }
 }

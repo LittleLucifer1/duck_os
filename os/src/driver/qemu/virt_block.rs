@@ -1,10 +1,9 @@
 use core::ptr::NonNull;
 
 use alloc::vec::Vec;
-use log::debug;
 use virtio_drivers::{device::blk::VirtIOBlk, transport::mmio::{MmioTransport, VirtIOHeader}, Hal};
 
-use crate::{config::mm::VIRTIO0, driver::BlockDevice, mm::{address::{phys_to_virt, ppn_to_phys}, allocator::frame::{alloc_contiguous_frame, dealloc_frame, FrameTracker}, memory_set::mem_set::KERNEL_SPACE}, sync::SpinNoIrqLock};
+use crate::{config::mm::VIRTIO0, driver::BlockDevice, mm::{address::{phys_to_ppn, phys_to_virt, ppn_to_phys}, allocator::frame::{alloc_contiguous_frame, dealloc_frame, FrameTracker}, memory_set::mem_set::KERNEL_SPACE}, sync::SpinNoIrqLock};
 
 pub struct VirtIOBlock(SpinNoIrqLock<VirtIOBlk<VirtioHal, MmioTransport>>);
 
@@ -15,7 +14,7 @@ impl BlockDevice for VirtIOBlock {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) {
         let result = self.0.lock().read_blocks(block_id, buf);
         match result {
-            Ok(_) => debug!("[Kernle](VirtIoBlock): Read block at {}", block_id),
+            Ok(_) => (),
             Err(_) => panic!("[Kernel](VirtIoBlock): Read error in block_id:{}", block_id)
         }
     }
@@ -23,7 +22,8 @@ impl BlockDevice for VirtIOBlock {
     fn write_block(&self, block_id: usize, buf: &[u8]) {
         let result = self.0.lock().write_blocks(block_id, buf);
         match result {
-            Ok(_) => debug!("[Kernle](VirtIoBlock): Write block at {}", block_id),
+            // Ok(_) => debug!("[Kernle](VirtIoBlock): Write block at {}", block_id),
+            Ok(_) => (),
             Err(_) => panic!("[Kernle](VirtIoBlock): Write error in block_id:{}", block_id)
         }
     }
@@ -67,7 +67,7 @@ unsafe impl Hal for VirtioHal {
         _vaddr: core::ptr::NonNull<u8>, 
         pages: usize
     ) -> i32 {
-        let mut ppn = ppn_to_phys(paddr);
+        let mut ppn = phys_to_ppn(paddr);
         for _ in 0..pages {
             dealloc_frame(ppn);
             ppn += 1;

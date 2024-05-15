@@ -18,9 +18,9 @@
 */
 
 use alloc::{collections::BTreeMap, sync::{Arc, Weak}};
-use spin::Mutex;
+use log::debug;
 
-use crate::{config::{fs::SECTOR_SIZE, mm::PAGE_SIZE}, fs::inode::Inode, sync::SpinLock};
+use crate::{config::{fs::SECTOR_SIZE, mm::PAGE_SIZE}, fs::{file::File, inode::Inode}, sync::SpinLock, syscall::error::OSResult};
 
 use super::{
     address::{align_down, byte_array, get_mut, get_ref, phys_to_ppn, ppn_to_phys, virt_to_vpn},
@@ -30,7 +30,7 @@ use super::{
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DataState {
-    Init,
+    Empty,
     Sync,
     Dirty,
 }
@@ -39,7 +39,7 @@ const DATA_SIZE: usize = PAGE_SIZE / SECTOR_SIZE;
 
 pub struct DiskFileInfo {
     // TODO：名字有些误导性，这个数据结构描述的是page用来表示磁盘上文件时的信息
-    // file_offset: 在以页面为单位下，文件offset所在页面的页面初始位置
+    // file_offset: 在以页面为单位下，文件offset所在页面的页面初始位置,
     inode: Weak<dyn Inode>,
     file_offset: usize,
     data_state: [DataState; DATA_SIZE],
@@ -50,7 +50,7 @@ impl DiskFileInfo {
         Self {
             inode,
             file_offset: f_offset,
-            data_state: [DataState::Init; DATA_SIZE],
+            data_state: [DataState::Empty; DATA_SIZE],
         }
     }
 
@@ -62,7 +62,7 @@ impl DiskFileInfo {
 pub struct Page {
     pub frame: FrameTracker,
     pub permission: PagePermission,
-    pub disk_file: Option<Mutex<DiskFileInfo>>,
+    pub disk_file: Option<SpinLock<DiskFileInfo>>,
     // page的计数原本是通过Arc来管理，但是因为page在很多cache中也被引用了。所以Arc引用值是不准确的。
     // 而在cow机制中，需要使用到这个计数的值，所以这里需要有这么一个值，同时要上锁。
     pub cow_count: SpinLock<usize>,
@@ -82,11 +82,12 @@ impl Page {
         }
     }
 
+    // 根据磁盘上的信息创建一个空的page，之后会保存在page cache中
     pub fn new_disk_page(per: PagePermission, inode: Weak<dyn Inode>, offset: usize) -> Self {
         Self {
             frame: alloc_frame().unwrap(),
             permission: per,
-            disk_file: Some(Mutex::new(DiskFileInfo::new(inode, offset))),
+            disk_file: Some(SpinLock::new(DiskFileInfo::new(inode, offset))),
             cow_count: SpinLock::new(0),
         }
     }
@@ -112,26 +113,26 @@ impl Page {
     }
 
     pub fn page_byte_array(&self) -> &'static mut [u8] {
-        byte_array(phys_to_ppn(self.frame.ppn))
+        byte_array(ppn_to_phys(self.frame.ppn))
     }
 
     fn to_sec_idx(page_offset: usize) -> usize {
         page_offset / SECTOR_SIZE 
     }
-    // 一个页面的读写
+    // 一个页面的读写，目前好像只有抽象的内存文件会调用这个函数，可能去磁盘上读数据。
+    // 内存中的页读取只需要使用page_byte_array函数即可。
     // page_offset: 为页面中的offset值
     // 如果对应磁盘上的文件时：内存中的一个页相当于磁盘上的8个块
     pub fn read(&self, page_offset: usize, buf: &mut [u8]) {
-        if page_offset >= PAGE_SIZE {
-            panic!()
-        }
+        assert!(page_offset < PAGE_SIZE);
         let len: usize = buf.len().min(PAGE_SIZE - page_offset);
-        // 如果是磁盘上的文件
+        // 如果是磁盘上的文件, 且页中的内容为空
         if self.disk_file.is_some() {
-            let end_offset = (page_offset + buf.len()).min(PAGE_SIZE);
+            let end_offset = page_offset + len;
+            // 找到8个block中数据所在的id
             for idx in Self::to_sec_idx(page_offset)..Self::to_sec_idx(end_offset - 1 + SECTOR_SIZE) {
                 let mut disk_file_lock = self.disk_file.as_ref().unwrap().lock();
-                if disk_file_lock.data_state[idx] == DataState::Init {
+                if disk_file_lock.data_state[idx] == DataState::Empty {
                     // offset：文件的位置 = 页开始的位置 + 页中某个块的开始位置
                     // buf：读到以块为单位的页其中某个块上，大小为块大小。
                     disk_file_lock.inode.upgrade().unwrap().read(
@@ -143,23 +144,43 @@ impl Page {
                 drop(disk_file_lock);
             }
         }
-        // TODO： 想一想内存中page的使用方法
-        buf.copy_from_slice(&self.page_byte_array()[page_offset..page_offset+len]);
+        // TODO： 想一想内存中page的使用方法 
+        // DONE: 大致想明白了。如果是内存中读取页，则会直接使用page_byte_array；
+        // 同时内存中不用担心要再写入数据，因为在创建page时，就会写入相关的数据，不存在某个数据放在某个地方没有读。(cow除外)
+        let data_buf = unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), len) };
+        data_buf.copy_from_slice(&self.page_byte_array()[page_offset..page_offset+len]);
+    }
+
+    // 装载整个page的内容。TODO: 暂时先考虑整页的load DONE！
+    pub fn load(&self) {
+        if self.disk_file.is_some() {
+            for idx in 0..(PAGE_SIZE / SECTOR_SIZE) {
+                let mut disk_file_lock = self.disk_file.as_ref().unwrap().lock();
+                if disk_file_lock.data_state[idx].eq(&DataState::Empty) {
+                    disk_file_lock.inode.upgrade().unwrap().read(
+                        disk_file_lock.file_offset + idx * SECTOR_SIZE,
+                        &mut self.page_byte_array()[idx*SECTOR_SIZE..(idx+1)*SECTOR_SIZE], 
+                    );
+                    disk_file_lock.change_data_state(DataState::Sync, idx);
+                }
+            }
+        } else {
+            // 一般不会出现这种情况！因为会使用这个函数，就意味着存在了disk_file
+            todo!()
+        }
     }
 
     pub fn write(&self, page_offset: usize, buf: &[u8]) {
-        if page_offset > PAGE_SIZE {
-            panic!()
-        }
+        assert!(page_offset < PAGE_SIZE);
         let len: usize = buf.len().min(PAGE_SIZE - page_offset);
         let start = page_offset;
         let end = page_offset + len;
         // 如果是磁盘上的文件
         if self.disk_file.is_some() {
-            let end_offset = (page_offset + buf.len()).min(PAGE_SIZE);
+            let end_offset = page_offset + len;
             for idx in Self::to_sec_idx(page_offset)..Self::to_sec_idx(end_offset - 1 + SECTOR_SIZE) {
                 let mut disk_file_lock = self.disk_file.as_ref().unwrap().lock();
-                if disk_file_lock.data_state[idx] == DataState::Init {
+                if disk_file_lock.data_state[idx] == DataState::Empty {
                     disk_file_lock.inode.upgrade().unwrap().read(
                         disk_file_lock.file_offset + idx * SECTOR_SIZE,
                         &mut self.page_byte_array()[idx*SECTOR_SIZE..(idx+1)*SECTOR_SIZE],
@@ -172,11 +193,48 @@ impl Page {
             }
         }
         // TODO: 小心copy_from_slice这个函数，不会检查两个切片的大小，我这里没有检查，区间可能会爆掉！
-        self.page_byte_array()[start..end].copy_from_slice(buf);
+        let data_buf = unsafe {core::slice::from_raw_parts(buf.as_ptr(), len)};
+        self.page_byte_array()[start..end].copy_from_slice(data_buf);
     }
 
-    pub fn sync() {
+    pub fn sync(&self) -> OSResult<()> {
+        let disk_file_lock = self.disk_file.as_ref().unwrap().lock();
+        let file_offset = disk_file_lock.file_offset;
+        let inode = disk_file_lock.inode.upgrade().unwrap().clone();
+        // 1.对每个块进行状态检查
+        for idx in 0..PAGE_SIZE / SECTOR_SIZE {
+            if disk_file_lock.data_state[idx].eq(&DataState::Dirty) {
+                // 2.因为inode只能写一个块的大小数据，分别找到这个块对应的(页的位置, 文件的位置)
+                let page_offset = idx * SECTOR_SIZE;
+                let file_off = file_offset + page_offset;
+                // 说明文件不再有当时那么大了，即被截断了。
+                if inode.metadata().inner.lock().i_size <= file_off {
+                    return Ok(());
+                }
+                inode.write(
+                    file_off,
+                    &mut self.page_byte_array()[page_offset..page_offset+SECTOR_SIZE],
+                );
+            } else {
+                todo!("Unreachable!");
+            }
+        }
+        Ok(())
+    }
+}
 
+// 用于mmap时，如果是映射文件，记录所关联的文件信息。
+// 只是记录一下相关的信息，因为正式的找数据，还是通过file去查找!
+#[derive(Clone)]
+pub struct BackenFile {
+    pub offset: usize, // 文件被映射的部分在文件中的开始位置
+    pub file: Arc<dyn File>,
+}
+
+// TODO：这个应该也要实现sync的功能
+impl BackenFile {
+    pub fn new(offset: usize, file: Arc<dyn File>) -> Self {
+        Self { offset, file }
     }
 }
 
@@ -185,7 +243,8 @@ pub struct PhysMemoryAddr {
     // 这个设计目前看起来有点鸡肋，只是做一做增删查改的工作
     // 对于page中的permission基本上没有什么改动
     pub page_manager: BTreeMap<usize, Arc<Page>>,
-    pub backen_file: Option<usize>,
+    // mmap时，物理内存对应磁盘上的文件
+    pub backen_file: Option<BackenFile>,
 }
 
 impl PhysMemoryAddr {
@@ -202,7 +261,8 @@ impl PhysMemoryAddr {
     // 删除一个页面
     pub fn pop_pma_page(&mut self, vpn: usize) {
         if !self.page_manager.contains_key(&vpn) {
-            todo!()
+            debug!("No page in vpn {:#x}", vpn);
+            return;
         }
         self.page_manager.remove(&vpn);
     }
@@ -212,6 +272,9 @@ impl PhysMemoryAddr {
         self.page_manager.insert(vpn, page);
     }
     
+    pub fn add_backen_file(&mut self, file: BackenFile) {
+        self.backen_file = Some(file);
+    }
 
     // 处理区间伸缩问题的相关函数
     // 就是将相关区间的frame释放，同时将None从中移除
@@ -238,7 +301,7 @@ impl PhysMemoryAddr {
     pub fn split(&mut self, left_end: usize, right_start: usize, _start: usize, end: usize) -> Self {
         let mut right_page_manager:BTreeMap<usize, Arc<Page>> = BTreeMap::new();
         for vpn in virt_to_vpn(right_start)..virt_to_vpn(end) {
-            right_page_manager.insert(vpn, self.page_manager.remove(&vpn).unwrap()); 
+            right_page_manager.insert(vpn, self.page_manager.remove(&vpn).unwrap());
         }
         for vpn in virt_to_vpn(left_end)..virt_to_vpn(right_start) {
             self.pop_pma_page(vpn);
@@ -271,7 +334,7 @@ impl PhysMemoryAddr {
             let n = (PAGE_SIZE - page_offset).min(len);
             let vpn = virt_to_vpn(start_align);
             
-            let page = self.page_manager.get_mut(&vpn).unwrap();
+            // let _page = self.page_manager.get_mut(&vpn).unwrap();
             op(finished, &mut self.page_manager.get(&vpn).unwrap().page_byte_array()[page_offset..page_offset+n]);
             start += n;
             len -= n;
@@ -291,8 +354,5 @@ impl PhysMemoryAddr {
             dst.copy_from_slice(&src[finished..finished + dst.len()]);
         })
     }
-    // fork相关的函数
-
-
     // 同步的相关函数(暂时不用考虑)
 }

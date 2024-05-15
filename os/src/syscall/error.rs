@@ -1,5 +1,6 @@
 
 pub type SyscallResult = Result<usize, Errno>;
+pub type OSResult<T> = Result<T, Errno>;
 
 pub enum Errno {
     EPERM = 1, // Operation not permitted

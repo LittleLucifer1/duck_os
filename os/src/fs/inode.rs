@@ -30,9 +30,8 @@
 use core::sync::atomic::AtomicUsize;
 
 use alloc::{sync::Arc, vec::Vec};
-use spin::mutex::Mutex;
 
-use crate::driver::BlockDevice;
+use crate::{driver::BlockDevice, sync::SpinLock};
 
 use super::info::{InodeMode, TimeSpec};
 
@@ -40,8 +39,8 @@ pub struct InodeMeta{
     pub i_ino: usize,
     pub i_mode: InodeMode,
     pub i_rdev: usize, // 设备通信的id
-    pub i_dev: InodeDev,
-    pub inner: Mutex<InodeMetaInner>,
+    pub i_dev: Option<InodeDev>,
+    pub inner: SpinLock<InodeMetaInner>,
 }
 
 pub struct InodeMetaInner {
@@ -66,8 +65,8 @@ impl InodeMeta {
             i_ino: ino,
             i_mode: mode,
             i_rdev: rdev,
-            i_dev: dev,
-            inner: Mutex::new(
+            i_dev: Some(dev),
+            inner: SpinLock::new(
                 InodeMetaInner {
                     i_atime: atime,
                     i_mtime: mtime,

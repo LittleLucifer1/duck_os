@@ -14,6 +14,9 @@ use super::page_table::PageTableEntry;
 pub type VirtAddr = usize;
 pub type PhysAddr = usize;
 
+pub fn vaddr_is_align(vaddr: VirtAddr) -> bool {
+    (vaddr & (PAGE_SIZE - 1)) == 0
+}
 
 pub fn check_kernel_va(vaddr: VirtAddr) {
     assert!((VADDR_LOW <= vaddr && vaddr <= VADDR_HIGH) || 
@@ -70,7 +73,7 @@ pub fn align_down(vaddr: VirtAddr) -> VirtAddr {
     vaddr & !(PAGE_SIZE - 1)
 }
 
-/// 虚拟地址所在下一页的页首地址
+/// 虚拟地址 页首则保持为页首位置，页中值则为下一页的页首位置
 pub fn align_up(vaddr: VirtAddr) -> VirtAddr {
     check_user_va(vaddr);
     (vaddr + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)

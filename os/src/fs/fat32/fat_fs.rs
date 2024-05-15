@@ -2,9 +2,9 @@
 
 use alloc::{string::ToString, sync::Arc};
 
-use crate::{config::fs::{BOOT_SECTOR_ID, SECTOR_SIZE}, driver::BlockDevice, fs::{dentry::Dentry, fat32::fat_inode::NXTFREEPOS_CACHE, file_system::{FSFlags, FSType, FileSystem, FileSystemMeta}, inode::Inode}, sync::SpinLock};
+use crate::{config::fs::{BOOT_SECTOR_ID, SECTOR_SIZE}, driver::BlockDevice, fs::{dentry::{Dentry, DENTRY_CACHE}, fat32::fat_inode::NXTFREEPOS_CACHE, file_system::{FileSystem, FileSystemMeta}, inode::Inode}, sync::SpinLock, syscall::{FSFlags, FSType}};
 
-use super::{bpb::load_bpb, fat::FatInfo, fat_dentry::FatDentry, fat_inode::FatInode, fsinfo::FSInfo, utility::{fat_sector, init_map}};
+use super::{bpb::load_bpb, fat::FatInfo, fat_dentry::FatDentry, fat_inode::{FatInode, NxtFreePos}, fsinfo::FSInfo, utility::{fat_sector, init_map}};
 
 /// fat中的文件系统
 pub struct Fat32FileSystem {
@@ -77,8 +77,10 @@ impl Fat32FileSystem {
         let root_dentry = FatDentry::new_from_root(fat_info.clone(), mount_point, Arc::clone(&r_inode));
         root_dentry.meta.inner.lock().d_inode = Arc::clone(&r_inode);
         let r_dentry: Arc<dyn Dentry> = Arc::new(root_dentry);
+        DENTRY_CACHE.lock().insert(mount_point.to_string(), r_dentry.clone());
         // 5. 让root_dentry 加载所有的子结点
         r_dentry.load_all_child(Arc::clone(&r_dentry));
+        // r_dentry.list_child();
         Self {
             meta: FileSystemMeta {
                 f_dev: dev_name.to_string(),

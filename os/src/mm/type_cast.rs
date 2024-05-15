@@ -3,7 +3,7 @@
 use bitflags::bitflags;
 
 bitflags! {
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     pub struct MapPermission: u8 {
         const R = 1 << 0;
         const W = 1 << 1;
@@ -14,6 +14,7 @@ bitflags! {
 
 
 bitflags! {
+    #[derive(Debug)]
     pub struct MmapProt: u32 {
         const PROT_NONE = 0;
         const PROT_READ = 1 << 0;
@@ -24,6 +25,7 @@ bitflags! {
 
 
 bitflags! {
+    #[derive(Debug)]
     pub struct MmapFlags: u32 {
         const MAP_SHARED = 1 << 0;
         const MAP_PRIVATE = 1 << 1;
@@ -36,7 +38,7 @@ bitflags! {
 
 // 0 ~ 9 V:0, R:1, W:2, X:3, U:4, G:5, A:6, D:7, RSW:8~9
 bitflags! {
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     pub struct PTEFlags: u16 {
         const V = 1 << 0;
         const R = 1 << 1;
@@ -51,7 +53,7 @@ bitflags! {
 }
 
 // TODO： 这种不同映射的转换还没有想清楚，待解决！！
-// TODO: 还有就是一个bug：from_bit(0) != empty()
+// Unsafe: 还有就是一个bug：from_bit(0) != empty()
 //！
 bitflags! {
     #[derive(Clone, Copy)]
@@ -113,10 +115,10 @@ impl From<MmapProt> for MapPermission {
         if value.contains(MmapProt::PROT_READ) {
             per |= MapPermission::R;
         }
-        // 这个参数不太好说，需要仔细的去看相关的代码
-        // if !value.contains(MmapProt::PROT_NONE) {
-        //     per |= MapPermission::U;
-        // }
+        // TODO: 这个参数不太好说，需要仔细的去看相关的代码 这个参数是pages may not be accessed.
+        if !value.contains(MmapProt::PROT_NONE) {
+            per |= MapPermission::U;
+        }
         per
     }
 }

@@ -3,9 +3,8 @@
 use alloc::{
     collections::VecDeque, sync::Arc, vec::Vec, vec,
 };
-use spin::mutex::Mutex;
 
-use crate::{config::fs::{SECTOR_CACHE_SIZE, SECTOR_SIZE}, driver::BlockDevice};
+use crate::{config::fs::{SECTOR_CACHE_SIZE, SECTOR_SIZE}, driver::BlockDevice, sync::SpinLock};
 
 pub struct BlockCache {
     cache: Vec<u8>,
@@ -18,6 +17,7 @@ impl BlockCache {
     /// Load a new BlockCache from disk.
     pub fn new(block_id: usize, block_device: Arc<dyn BlockDevice>) -> Self {
         // for alignment and move effciency
+        
         let mut cache = vec![0u8; SECTOR_SIZE];
         block_device.read_block(block_id, &mut cache);
         Self {
@@ -78,7 +78,7 @@ impl Drop for BlockCache {
 /// BlockCacheManager is a manager for BlockCache.
 pub struct BlockCacheManager {
     /// (block_id, block_cache, flag)
-    queue: VecDeque<(usize, Arc<Mutex<BlockCache>>, usize)>,
+    queue: VecDeque<(usize, Arc<SpinLock<BlockCache>>, usize)>,
     clock: usize,
 }
 
@@ -96,11 +96,11 @@ impl BlockCacheManager {
         &mut self,
         block_id: usize,
         block_device: Arc<dyn BlockDevice>,
-    ) -> Arc<Mutex<BlockCache>> {
+    ) -> Arc<SpinLock<BlockCache>> {
         if let Some(pair) = self.queue.iter().find(|pair| pair.0 == block_id) {
             Arc::clone(&pair.1)
         } else {
-            let block_cache = Arc::new(Mutex::new(BlockCache::new(
+            let block_cache = Arc::new(SpinLock::new(BlockCache::new(
                 block_id,
                 Arc::clone(&block_device),
             )));
@@ -129,14 +129,14 @@ impl BlockCacheManager {
     }
 }
 
-pub static BLOCK_CACHE_MANAGER: Mutex<BlockCacheManager> = 
-    Mutex::new(BlockCacheManager::new());
+pub static BLOCK_CACHE_MANAGER: SpinLock<BlockCacheManager> = 
+    SpinLock::new(BlockCacheManager::new());
 
 /// Get a block cache from the queue. according to the block_id.
 pub fn get_block_cache(
     block_id: usize,
     block_device: Arc<dyn BlockDevice>,
-) -> Arc<Mutex<BlockCache>> {
+) -> Arc<SpinLock<BlockCache>> {
     BLOCK_CACHE_MANAGER
         .lock()
         .get_block_cache(block_id, block_device)

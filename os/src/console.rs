@@ -1,5 +1,5 @@
 //！这个模块处理print 和 println相关的内容
-//！依赖 SBI 和 mutex
+//！依赖 SBI
 
 use crate::sbi::console_putchar;
 use core::fmt::{self, Write};

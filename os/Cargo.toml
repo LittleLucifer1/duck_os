@@ -22,7 +22,8 @@ virtio-drivers = "0.6.0"
 debug = true
 
 [features]
-default = ["qemu"]
+default = ["qemu", "preliminary"]
 
 qemu = []
+preliminary = []
 multi_hart = []

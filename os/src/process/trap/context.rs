@@ -16,6 +16,15 @@ pub struct TrapContext {
 }
 
 impl TrapContext {
+    pub fn empty() -> Self {
+        Self {
+            x: [0; 32],
+            sstatus: sstatus::read(),
+            sepc: 0,
+            cpu_id: 0,
+        }
+    }
+
     pub fn set_register(&mut self, reg: Register, value: usize) {
         let idx: usize = reg.into();
         self.x[idx] = value;
@@ -42,6 +51,14 @@ impl TrapContext {
         cx.set_register(Register::a2, stack_layout.envp);
         cx.set_register(Register::a3, stack_layout.auxv);
         cx
+    }
+
+    // 复制trap_context中的内容
+    pub fn from_clone(&mut self, tx :&Self) {
+        self.x.copy_from_slice(&tx.x);
+        self.sstatus = tx.sstatus;
+        self.sepc = tx.sepc;
+        self.cpu_id = tx.cpu_id;
     }
 }
 

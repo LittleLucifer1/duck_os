@@ -11,7 +11,6 @@ use core::{arch::global_asm, sync::atomic::AtomicBool};
 // use core::arch::asm
 use log::*;
 use process::hart::cpu;
-use riscv::register::sstatus;
 
 use crate::process::hart;
 
@@ -95,16 +94,16 @@ pub fn rust_main() {
             mm::init();
             process::trap::init_stvec();
             driver::init_block_device();
-            unsafe {
-                sstatus::set_sum();
-                // println!("sstatus is {:x?}", sstatus::read());
-            }
+            // block_device_test();
+            // unsafe {
+            //     sstatus::set_sum();
+            // }
             fs::init();
-            // loop {} // 暂时放在这里，如果没有它，之后就会触发内核中断,因为离开rust_main函数之后，pc会跑到0的位置。
             process::init_origin_task();
             cpu::run_task();
             #[cfg(feature = "multi_hart")]
             hart::cpu::start_other_hart();
+            // // 暂时放在这里，如果没有它，之后就会触发内核中断,因为离开rust_main函数之后，pc会跑到0的位置。
             loop {}
 
         } else {

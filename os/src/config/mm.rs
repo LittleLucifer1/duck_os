@@ -55,10 +55,19 @@ pub const USER_UPPER_LIMIT: usize = 0xffff_ffff;
 pub const USER_STACK_SIZE: usize = 0x800000; 
 
 /// 用户栈的初始栈顶和栈底 （用户地址空间的倒数第二页）
-pub const USER_STACK_BOTTOM: usize = 0xFFFF_F000;
+pub const USER_STACK_TOP: usize = 0xFFFF_F000;
 
 // virtio-driver的映射位置
 pub const VIRTIO0: usize = 0x1000_1000 + PHY_TO_VIRT_OFFSET;
 
 // 0xffff_ffff_8000_0000 -> 0x8000_0000的映射表项位置
 pub const KERNEL_PTE_POS: usize = 510;
+
+// 0xffff_ffff_1000_0000 ~ 0xffff_ffff_4000_0000 的区域
+pub const KERNEL_MMIO_PTE_POS: usize = 508;
+
+// Mmap区域的最高处
+pub const MMAP_TOP: usize = 0x0f5f_f000;
+
+// Mmap区域的最低处
+pub const MMAP_BOTTOM: usize = 0x0e5f_f000;

@@ -1,13 +1,13 @@
 # Building
 TARGET := riscv64gc-unknown-none-elf
-MODE := debug
+MODE := release
 KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin
 DISASM_TMP := target/$(TARGET)/$(MODE)/asm
 FS_IMG_FAT32 := ../fat32.img
 FS_IMG := ../fs.img
 KERNEL_FEATURE :=
-TEST_DIR := ../hellostd
+TEST_DIR := ../testcases/riscv64
 
 
 CPUS = 2
@@ -32,7 +32,7 @@ OBJDUMP := rust-objdump --arch-name=riscv64
 OBJCOPY := rust-objcopy --binary-architecture=riscv64
 
 # Disassembly
-DISASM ?= -x
+DISASM ?= -d
 
 build: env $(KERNEL_BIN) fs-img
 
@@ -51,7 +51,7 @@ fat32-img:
 	@echo "make fatfs img"
 	@-mkdir -p mnt
 	@sudo mount -t vfat -o user,umask=000,utf8=1 --source $(FS_IMG_FAT32) --target mnt
-	@-cp $(TEST_DIR) mnt
+	@-cp -r $(TEST_DIR)/* mnt
 	@sudo umount mnt
 	@rm -rf mnt
 	@sudo chmod -R 777 $(FS_IMG_FAT32)

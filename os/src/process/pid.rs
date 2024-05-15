@@ -1,7 +1,6 @@
 use bitmap_allocator::{BitAlloc, BitAlloc4K};
-use spin::Mutex;
 
-use crate::config::task::MAX_PID;
+use crate::{config::task::MAX_PID, sync::SpinLock};
 
 type PidAllocatorImpl = BitAlloc4K;
 
@@ -26,7 +25,7 @@ impl PidAllocator for PidAllocatorImpl {
     }
 }
 
-pub static PID_ALLOCATOR: Mutex<PidAllocatorImpl> = Mutex::new(PidAllocatorImpl::DEFAULT);
+pub static PID_ALLOCATOR: SpinLock<PidAllocatorImpl> = SpinLock::new(PidAllocatorImpl::DEFAULT);
 
 pub struct Pid {
     pub value: usize,

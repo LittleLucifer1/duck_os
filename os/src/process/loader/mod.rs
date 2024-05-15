@@ -1,9 +1,9 @@
 //！ 加载模块 —— 目前只实现静态加载
 
 use alloc::{string::String, sync::Arc, vec::Vec};
-use virtio_drivers::PAGE_SIZE;
+use log::info;
 
-use crate::{config::mm::{USER_STACK_BOTTOM, USER_STACK_SIZE}, mm::{address::{align_up, vaddr_offset}, memory_set::{mem_set::MemeorySet, page_fault::{UHeapPageFaultHandler, UStackPageFaultHandler}}, type_cast::MapPermission, vma::{MapType, VirtMemoryAddr, VmaType}}};
+use crate::{config::mm::{USER_STACK_TOP, USER_STACK_SIZE}, mm::{address::{align_up, vaddr_offset}, memory_set::{mem_set::MemeorySet, page_fault::{UHeapPageFaultHandler, UStackPageFaultHandler}}, type_cast::MapPermission, vma::{MapType, VirtMemoryAddr, VmaType}}};
 use self::stack::{StackInfo, StackLayout};
 
 pub mod dynamic;
@@ -64,12 +64,12 @@ pub fn load_elf(data: &[u8], vm: &mut MemeorySet, args: Vec<String>, envs: Vec<S
         }
     }
     // 映射用户栈
-    let user_stack_bottom = USER_STACK_BOTTOM;
-    let user_stack_top = user_stack_bottom - USER_STACK_SIZE;
+    let user_stack_top = USER_STACK_TOP;
+    let user_stack_bottom = user_stack_top - USER_STACK_SIZE;
     // TODO： 修改为push_no_map的形式
     vm.push(VirtMemoryAddr::new(
-        user_stack_top, 
-        user_stack_bottom,
+        user_stack_bottom, 
+        user_stack_top,
         MapPermission::U | MapPermission::R | MapPermission::W, 
         MapType::Framed, 
         VmaType::UserStack,
@@ -78,7 +78,7 @@ pub fn load_elf(data: &[u8], vm: &mut MemeorySet, args: Vec<String>, envs: Vec<S
         None,
         0
     );
-
+    // TODO: 这里的堆到底有没有成功映射 DONE：有，只不过没有任何的映射数据罢了。
     let heap_end = heap_start;
     vm.push(VirtMemoryAddr::new(
         heap_start, 
@@ -91,8 +91,8 @@ pub fn load_elf(data: &[u8], vm: &mut MemeorySet, args: Vec<String>, envs: Vec<S
         None,
         0
     );
-    vm.heap_start = heap_start;
-    println!("The heap start is 0x{:x}", heap_start);
+    vm.heap_end = heap_end;
+    info!("The heap start is 0x{:x}, heap end is 0x{:X}", heap_start, heap_end);
     let mut stack_layout: Option<StackLayout> = None;
     // 需要构建user stack中的内容
     if !args.is_empty() || !envs.is_empty() {
@@ -101,10 +101,10 @@ pub fn load_elf(data: &[u8], vm: &mut MemeorySet, args: Vec<String>, envs: Vec<S
         stack_info.init_arg(args, envs);
         stack_info.init_auxv(&elf);
 
-        let (sp, layout) = stack_info.build_stack(user_stack_bottom - 1);
+        let (sp, layout) = stack_info.build_stack(user_stack_top);
         stack_layout = Some(layout);
     }
-    println!("The entry_point is {:x}, user_stack_top is {:x}, user_stack_bottom is {:x}", entry_point, user_stack_top, user_stack_bottom);
-    (entry_point, user_stack_bottom - PAGE_SIZE, stack_layout)
+    info!("The entry_point is {:x}, user_stack_top is {:x}, user_stack_bottom is {:x}", entry_point, user_stack_top, user_stack_bottom);
+    (entry_point, user_stack_top, stack_layout)
     
 }

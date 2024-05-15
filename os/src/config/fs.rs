@@ -20,4 +20,7 @@ pub const ROOT_CLUSTER_NUM: usize = 2;
 pub const MAX_DIRENT_PER_SECTOR: usize = 16;
 
 // 最大的Fd数
-pub const MAX_FD: usize = 512;
+pub const MAX_FD: usize = 200;
+
+// 管道缓冲区最大字节数
+pub const MAX_PIPE_BUFFER: usize = 1024 * 8; // 8 kb

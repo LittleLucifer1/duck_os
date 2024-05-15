@@ -3,9 +3,8 @@
 use core::fmt::Debug;
 
 use alloc::{collections::BTreeMap, string::String, sync::Arc};
-use spin::mutex::Mutex;
 
-use crate::{config::fs:: SECTOR_SIZE, driver::BlockDevice};
+use crate::{config::fs:: SECTOR_SIZE, driver::BlockDevice, sync::SpinLock};
 
 use super::block_cache::{get_block_cache, BlockCache};
 
@@ -17,7 +16,7 @@ pub struct FSInfo {
     pub FSI_Free_Count: u32,
     pub FSI_Nxt_Free: u32,
     pub FSI_TrailSig: u32,
-    pub block_cache: Option<Arc<Mutex<BlockCache>>>,
+    pub block_cache: Option<Arc<SpinLock<BlockCache>>>,
 }
 
 impl FSInfo {

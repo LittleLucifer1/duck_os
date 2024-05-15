@@ -2,11 +2,11 @@
 //! 
 use core::fmt::Debug;
 
-use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, string::{String, ToString}, sync::Arc, vec::Vec};
 
-use crate::{config::fs::ROOT_CLUSTER_NUM, fs::{dentry::{cwd_and_name, cwd_and_path, dentry_name, path_plus_name, Dentry, DentryMeta, DentryMetaInner, DENTRY_CACHE}, info::{InodeMode, OpenFlags}, inode::Inode}, sync::SpinLock};
+use crate::{config::fs::ROOT_CLUSTER_NUM, fs::{dentry::{Dentry, DentryMeta, DentryMetaInner, DENTRY_CACHE}, file::{File, FileMeta, FileMetaInner, SeekFrom}, info::{FileMode, InodeMode, OpenFlags}, inode::Inode, page_cache::PageCache}, sync::SpinLock, syscall::error::OSResult, utils::path::{cwd_and_name, dentry_name}};
 
-use super::{block_cache::get_block_cache, data::{parse_child, DirEntry}, fat::{find_all_cluster, FatInfo}, fat_inode::{FatInode, NxtFreePos, NXTFREEPOS_CACHE}, utility::cluster_to_sector, DirEntryStatus};
+use super::{block_cache::get_block_cache, data::{parse_child, DirEntry}, fat::{find_all_cluster, FatInfo}, fat_file::FatMemFile, fat_inode::{FatInode, NxtFreePos, NXTFREEPOS_CACHE}, utility::cluster_to_sector, DirEntryStatus};
 
 // 目录项的位置信息 （自身的cluster——通常在父目录中， offset——dentry的编号，内容的所在的cluster）
 // 如果self_cluster == 0，说明没有父目录，即是根目录
@@ -73,7 +73,7 @@ impl Dentry for FatDentry {
     fn mknod(&self, path: &str, mode: InodeMode, dev_id: Option<usize>) -> Arc<dyn Dentry> {
         let inode = Arc::clone(&self.meta.inner.lock().d_inode);
         let child_inode = FatInode::mknod(
-            Arc::clone(&inode), 
+            inode, 
             path, 
             mode, 
             Arc::clone(&self.fat_info),
@@ -84,25 +84,50 @@ impl Dentry for FatDentry {
 
     // Assumption: name是单个名字
     // function：此时flags == CREATE, 所以需要创建对应的文件
-    // 在openat函数中使用。
-    fn open(&self, this: Arc<dyn Dentry>, name: &str, flags: OpenFlags) -> Option<Arc<dyn Dentry>> {
-        // if let Some(inode) = &self.metadata().inner.lock().d_inode {
-        
+    // 这个函数是mkdir和mknod的结合，因为要处理关系，所以直接使用mkdir和mknod多有不便。
+    // 系统调用中的openat和mkdirat都是使用着这个函数去创建文件或者目录
+    fn create(&self, this: Arc<dyn Dentry>, name: &str, mode: InodeMode) -> OSResult<Arc<dyn Dentry>> {
         let child_dentry: Arc<dyn Dentry>;
-        if flags.contains(OpenFlags::O_DIRECTORY) {
+        if mode.eq(&InodeMode::Directory) {
             child_dentry = self.mkdir(
-                &path_plus_name(&self.path(), name), 
+                &cwd_and_name(name, &self.path()),
                 InodeMode::Directory);
-        } else {
+        } else if mode.eq(&InodeMode::Regular) {
             child_dentry = self.mknod(
-                &path_plus_name(&self.path(), name), 
+                &cwd_and_name(name, &self.path()),
                 InodeMode::Regular,
                 None,
             );
-        }       
-        self.meta.inner.lock().d_child.push(Arc::clone(&child_dentry));
+        } else { // 其他的类型，暂时不支持！
+            todo!();
+        }
+        self.meta.inner.lock().d_child.insert(name.to_string(), Arc::clone(&child_dentry));
         child_dentry.metadata().inner.lock().d_parent = Some(Arc::downgrade(&this));
-        Some(child_dentry)
+        Ok(child_dentry)
+    }
+
+    // Assumption: name是单个名字
+    // function：此时flags == CREATE, 所以需要创建对应的文件
+    // TODO: 当flags == TRUNCATE时，需要修改f_pos! DONE: 就是修改file_size!
+    fn open(&self, dentry: Arc<dyn Dentry>, flags: OpenFlags) -> OSResult<Arc<dyn File>> {
+        let file_meta = FileMeta {
+            f_mode: flags.clone().into(),
+            page_cache: Some(Arc::new(PageCache::new())),
+            f_dentry: Arc::clone(&dentry),
+            f_inode: Arc::downgrade(&Arc::clone(&dentry.metadata().inner.lock().d_inode)),
+            inner: SpinLock::new(FileMetaInner {
+                f_pos: 0,
+                dirent_index: 0,
+            })
+        };
+        let file = FatMemFile::init(file_meta);
+        if flags.contains(OpenFlags::O_TRUNC) {
+            file.truncate(0)?;   
+        }
+        if flags.contains(OpenFlags::O_APPEND) {
+            file.seek(SeekFrom::End(0))?;
+        }
+        Ok(Arc::new(file))
     }
 
     fn load_child(&self, this: Arc<dyn Dentry>) {
@@ -148,11 +173,13 @@ impl Dentry for FatDentry {
         for child in childs.into_iter() {
             let name = child.meta.inner.lock().d_name.clone();
             let cwd = self.meta.inner.lock().d_path.clone();
-            child.meta.inner.lock().d_path = cwd_and_name(&name, &cwd);
+            let path = cwd_and_name(&name, &cwd);
+            child.meta.inner.lock().d_path = path.clone();
             // 维护好关系
             child.meta.inner.lock().d_parent = Some(Arc::downgrade(&this));
             let child_rc: Arc<dyn Dentry> = Arc::new(child);
-            self.meta.inner.lock().d_child.push(Arc::clone(&child_rc));
+            DENTRY_CACHE.lock().insert(path, Arc::clone(&child_rc));
+            self.meta.inner.lock().d_child.insert(name, Arc::clone(&child_rc));
         }
     }
     
@@ -167,26 +194,17 @@ impl Dentry for FatDentry {
             return;
         }
         fa.load_child(fa.clone());
-        for child in &fa.metadata().inner.lock().d_child {
+        for (_, child) in &fa.metadata().inner.lock().d_child {
             child.load_all_child(Arc::clone(child));
         }
     }
 
+    // 这个函数的功能暂时很简单，就是删除cache中的数据，同时删除关系和磁盘上的数据（其实不用删除？？）
     fn unlink(&self, child: Arc<dyn Dentry>) {
         let child_name = child.metadata().inner.lock().d_name.clone();
-        let mut id: Option<usize> = None;
-        for (idx, inode) in self.meta.inner.lock().d_child.iter().enumerate() {
-            if child_name == inode.metadata().inner.lock().d_name {
-                id = Some(idx);
-                break;
-            }
-        }
-        if id.is_none() {
-            panic!("[kernel](unlink): No corresponding linked file");
-        }
         DENTRY_CACHE.lock().remove(&child.metadata().inner.lock().d_path);
         child.metadata().inner.lock().d_inode.delete_data();
-        self.meta.inner.lock().d_child.remove(id.unwrap());
+        self.meta.inner.lock().d_child.remove(&child_name);
     }
 }
 
@@ -199,7 +217,7 @@ impl FatDentry {
                     d_path: mount_point.to_string(),
                     d_inode: inode,
                     d_parent: None,
-                    d_child: Vec::new(),
+                    d_child: BTreeMap::new(),
                 })
             },
             pos: Position { 
@@ -229,7 +247,7 @@ impl FatDentry {
                     d_path: path.to_string(),
                     d_inode: Arc::new(inode),
                     d_parent: None,
-                    d_child: Vec::new(),
+                    d_child: BTreeMap::new(),
                 })
             },
             pos,
