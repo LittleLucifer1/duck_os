@@ -6,12 +6,6 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-
 [dependencies]
 log = "0.4"
 buddy_system_allocator = "0.9.1"

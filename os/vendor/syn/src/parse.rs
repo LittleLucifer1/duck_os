@@ -188,6 +188,8 @@ use crate::lookahead;
 use crate::punctuated::Punctuated;
 use crate::token::Token;
 use proc_macro2::{Delimiter, Group, Literal, Punct, Span, TokenStream, TokenTree};
+#[cfg(feature = "printing")]
+use quote::ToTokens;
 use std::cell::Cell;
 use std::fmt::{self, Debug, Display};
 #[cfg(feature = "extra-traits")]
@@ -612,11 +614,6 @@ impl<'a> ParseBuffer<'a> {
     /// ```
     pub fn peek2<T: Peek>(&self, token: T) -> bool {
         fn peek2(buffer: &ParseBuffer, peek: fn(Cursor) -> bool) -> bool {
-            if let Some(group) = buffer.cursor().group(Delimiter::None) {
-                if group.0.skip().map_or(false, peek) {
-                    return true;
-                }
-            }
             buffer.cursor().skip().map_or(false, peek)
         }
 
@@ -627,11 +624,6 @@ impl<'a> ParseBuffer<'a> {
     /// Looks at the third-next token in the parse stream.
     pub fn peek3<T: Peek>(&self, token: T) -> bool {
         fn peek3(buffer: &ParseBuffer, peek: fn(Cursor) -> bool) -> bool {
-            if let Some(group) = buffer.cursor().group(Delimiter::None) {
-                if group.0.skip().and_then(Cursor::skip).map_or(false, peek) {
-                    return true;
-                }
-            }
             buffer
                 .cursor()
                 .skip()
@@ -1353,6 +1345,26 @@ impl Parse for Nothing {
         Ok(Nothing)
     }
 }
+
+#[cfg(feature = "printing")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
+impl ToTokens for Nothing {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let _ = tokens;
+    }
+}
+
+#[cfg(feature = "clone-impls")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "clone-impls")))]
+impl Clone for Nothing {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[cfg(feature = "clone-impls")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "clone-impls")))]
+impl Copy for Nothing {}
 
 #[cfg(feature = "extra-traits")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "extra-traits")))]
