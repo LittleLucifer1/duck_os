@@ -97,9 +97,9 @@ disasm-vim: kernel
 	@vim $(DISASM_TMP)
 	@rm $(DISASM_TMP)
 
-run-local: run-fat32
+run: run-fat32
 
-run :cargo_config build-fat32
+all :cargo_config build-fat32
 	@cp $(KERNEL_BIN) ../kernel_qemu
 	@cp $(BOOTLOADER) ../sbi-qemu
 
