@@ -8,12 +8,6 @@ description = "Low level access to RISC-V processors"
 keywords = ["riscv", "register", "peripheral"]
 license = "ISC"
 
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-
 [dependencies]
 bare-metal = "0.2.5"
 bitflags = "1.0"
