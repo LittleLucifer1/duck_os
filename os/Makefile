@@ -99,14 +99,9 @@ disasm-vim: kernel
 
 run: run-fat32
 
-all :cargo_config build-fat32
+all :build-fat32
 	@cp $(KERNEL_BIN) ../kernel_qemu
 	@cp $(BOOTLOADER) ../sbi-qemu
-
-cargo_config:
-	if [ ! -e ./.cargo ]; then \
-		mv $(CARGO_CONFIG) ./.cargo; \
-	fi
 
 run-inner: build
 	@echo "start to run bare kernel in qemu"
