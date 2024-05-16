@@ -77,7 +77,7 @@ user-bin:
 kernel:
 	@echo Platform: $(BOARD)
 ifeq ($(KERNEL_FEATURE), )
-	@cargo build $(MODE_ARG)
+	@cargo build --offline $(MODE_ARG)
 else
 	@cargo build $(MODE_ARG) --feature $(KERNEL_FEATURE)
 endif
