@@ -1,6 +1,6 @@
 //! 这个是 copy-on-write 模块 
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc};
 
 use crate::utils::cell::SyncUnsafeCell;
 

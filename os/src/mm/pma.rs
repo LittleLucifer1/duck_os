@@ -23,7 +23,7 @@ use log::debug;
 use crate::{config::{fs::SECTOR_SIZE, mm::PAGE_SIZE}, fs::{file::File, inode::Inode}, sync::SpinLock, syscall::error::OSResult};
 
 use super::{
-    address::{align_down, byte_array, get_mut, get_ref, phys_to_ppn, ppn_to_phys, virt_to_vpn},
+    address::{align_down, byte_array, get_mut, get_ref, ppn_to_phys, virt_to_vpn},
     allocator::frame::{alloc_frame, FrameTracker}, 
     type_cast::PagePermission,
 };

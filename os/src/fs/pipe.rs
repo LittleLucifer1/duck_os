@@ -1,5 +1,4 @@
 use alloc::sync::{Arc, Weak};
-use riscv::register::sstatus;
 
 use crate::{config::fs::MAX_PIPE_BUFFER, process::hart::{cpu::suspend_current_task, env::SumGuard}, sync::SpinLock, syscall::error::{Errno, OSResult}};
 

@@ -10,7 +10,7 @@
 use alloc::sync::{Arc, Weak};
 use riscv::register::scause::Scause;
 
-use crate::mm::{address::{virt_to_vpn, VirtAddr}, page_table::PageTable, pma::Page, type_cast::{MapPermission, PTEFlags, PagePermission}, vma::VirtMemoryAddr};
+use crate::mm::{address::{virt_to_vpn, VirtAddr}, page_table::PageTable, pma::Page, type_cast::{PTEFlags, PagePermission}, vma::VirtMemoryAddr};
 
 use super::mem_set::MemeorySet;
 

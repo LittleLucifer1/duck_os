@@ -4,7 +4,7 @@ use alloc::{string::ToString, sync::Arc};
 
 use crate::{config::fs::{BOOT_SECTOR_ID, SECTOR_SIZE}, driver::BlockDevice, fs::{dentry::{Dentry, DENTRY_CACHE}, fat32::fat_inode::NXTFREEPOS_CACHE, file_system::{FileSystem, FileSystemMeta}, inode::Inode}, sync::SpinLock, syscall::{FSFlags, FSType}};
 
-use super::{bpb::load_bpb, fat::FatInfo, fat_dentry::FatDentry, fat_inode::{FatInode, NxtFreePos}, fsinfo::FSInfo, utility::{fat_sector, init_map}};
+use super::{bpb::load_bpb, fat::FatInfo, fat_dentry::FatDentry, fat_inode::FatInode, fsinfo::FSInfo, utility::{fat_sector, init_map}};
 
 /// fat中的文件系统
 pub struct Fat32FileSystem {

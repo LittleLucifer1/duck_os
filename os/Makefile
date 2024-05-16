@@ -5,10 +5,11 @@ KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin
 DISASM_TMP := target/$(TARGET)/$(MODE)/asm
 FS_IMG_FAT32 := ../fat32.img
-FS_IMG := ../fs.img
+# FS_IMG := ../fs.img
+FS_IMG := ../sdcard.img
 KERNEL_FEATURE :=
 TEST_DIR := ../testcases/riscv64
-
+CARGO_CONFIG := ./cargo_config
 
 CPUS = 2
 PRELIMINARY = 1
@@ -96,7 +97,16 @@ disasm-vim: kernel
 	@vim $(DISASM_TMP)
 	@rm $(DISASM_TMP)
 
-run: run-fat32
+run-local: run-fat32
+
+run :cargo_config build-fat32
+	@cp $(KERNEL_BIN) ../kernel_qemu
+	@cp $(BOOTLOADER) ../sbi-qemu
+
+cargo_config:
+	if [ ! -e ./.cargo ]; then \
+		mv $(CARGO_CONFIG) ./.cargo; \
+	fi
 
 run-inner: build
 	@echo "start to run bare kernel in qemu"
@@ -149,4 +159,4 @@ gdbserver: build-fat32
 gdbclient:
 	@riscv64-unknown-elf-gdb -ex 'file $(KERNEL_ELF)' -ex 'set arch riscv:rv64' -ex 'target remote localhost:1234'
 
-.PHONY: build env kernel clean disasm disasm-vim run-inner gdbserver gdbclient
+.PHONY: build env kernel clean disasm disasm-vim run-inner gdbserver gdbclient cargo_config run-local

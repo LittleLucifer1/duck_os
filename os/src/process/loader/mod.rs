@@ -3,7 +3,15 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use log::info;
 
-use crate::{config::mm::{USER_STACK_TOP, USER_STACK_SIZE}, mm::{address::{align_up, vaddr_offset}, memory_set::{mem_set::MemeorySet, page_fault::{UHeapPageFaultHandler, UStackPageFaultHandler}}, type_cast::MapPermission, vma::{MapType, VirtMemoryAddr, VmaType}}};
+use crate::{
+    config::mm::{USER_STACK_TOP, USER_STACK_SIZE}, 
+    mm::{
+        address::{align_up, vaddr_offset}, 
+        memory_set::{mem_set::MemeorySet, page_fault::{UHeapPageFaultHandler, UStackPageFaultHandler}}, 
+        type_cast::MapPermission, 
+        vma::{MapType, VirtMemoryAddr, VmaType}
+    }
+};
 use self::stack::{StackInfo, StackLayout};
 
 pub mod dynamic;
@@ -101,7 +109,7 @@ pub fn load_elf(data: &[u8], vm: &mut MemeorySet, args: Vec<String>, envs: Vec<S
         stack_info.init_arg(args, envs);
         stack_info.init_auxv(&elf);
 
-        let (sp, layout) = stack_info.build_stack(user_stack_top);
+        let (_sp, layout) = stack_info.build_stack(user_stack_top);
         stack_layout = Some(layout);
     }
     info!("The entry_point is {:x}, user_stack_top is {:x}, user_stack_bottom is {:x}", entry_point, user_stack_top, user_stack_bottom);

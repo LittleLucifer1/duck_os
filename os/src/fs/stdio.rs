@@ -1,7 +1,3 @@
-use core::iter::Sum;
-
-use riscv::register::sstatus;
-
 use crate::{process::hart::{cpu::suspend_current_task, env::SumGuard}, sbi, syscall::error::OSResult};
 
 use super::{file::File, info::OpenFlags};

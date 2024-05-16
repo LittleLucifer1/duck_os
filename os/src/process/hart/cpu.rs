@@ -5,7 +5,17 @@ use core::arch;
 use alloc::{sync::Arc, vec::Vec};
 use log::*;
 
-use crate::{board::{QEMUExit, QEMU_EXIT_HANDLE}, config::task::MAX_CORE_NUM, mm::memory_set::mem_set::kernel_space_activate, process::{self, context::TaskContext, init_task_and_push, pcb::{TaskStatus, PCB}, schedule::{pop_task_from_schedule, push_task_to_schedule}, switch::{__switch, __switch_to_idle}, ORIGIN_TASK, TESTCASE}, sbi::{self, sbi_qemu_shutdown}, sync::SpinLock};
+use crate::{
+    config::task::MAX_CORE_NUM, 
+    mm::memory_set::mem_set::kernel_space_activate, 
+    process::{
+        self, context::TaskContext, init_task_and_push, 
+        pcb::{TaskStatus, PCB}, schedule::{pop_task_from_schedule, push_task_to_schedule}, 
+        switch::{__switch, __switch_to_idle}, ORIGIN_TASK, TESTCASE
+    }, 
+    sbi::{self, sbi_qemu_shutdown}, 
+    sync::SpinLock
+};
 
 use super::env::Env;
 
