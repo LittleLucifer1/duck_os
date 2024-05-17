@@ -101,7 +101,7 @@ disasm-vim: kernel
 run: run-fat32
 
 all :build-fat32
-	@cp $(KERNEL_ELF) ../kernel-qemu
+	@cp $(KERNEL_BIN) ../kernel-qemu
 	@cp $(BOOTLOADER) ../sbi-qemu
 
 run-inner: build
