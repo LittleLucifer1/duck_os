@@ -67,7 +67,7 @@ env:
 	rustup component add llvm-tools-preview
 
 $(KERNEL_BIN): kernel
-	@$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
+# @$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
 
 user-bin: 
 	@echo "build user bin"
