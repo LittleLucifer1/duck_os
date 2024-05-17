@@ -228,7 +228,7 @@ pub fn sys_getdents64(fd: usize, dirp: usize, count: usize) -> SyscallResult {
             // println!("dirent64: {:#?}", dirent64);
             if buf_off + size > count {
                 debug!("[sys_getdents64]: Result buffer is too small");
-                return Err(Errno::EINVAL);
+                break;
             }
             unsafe {
                 // println!("dirp:{:#x}, buf_off: {}({:#x}), name_len: {}, Dirent size: {:#x}", dirp, buf_off, buf_off, name.len(), Dirent64::dirent_size());

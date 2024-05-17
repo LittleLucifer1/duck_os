@@ -5,3 +5,4 @@
 target
 os/.gdb_history
 *-qemu
+*.img
