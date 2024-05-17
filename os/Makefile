@@ -67,7 +67,7 @@ env:
 	rustup component add llvm-tools-preview
 
 $(KERNEL_BIN): kernel
-# @$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
+	@$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
 
 user-bin: 
 	@echo "build user bin"
@@ -76,11 +76,11 @@ user-bin:
 
 kernel:
 	@echo Platform: $(BOARD)
-# ifeq ($(KERNEL_FEATURE), )
-# 	@cargo build $(MODE_ARG) --offline
-# else
-# 	@cargo build $(MODE_ARG) --feature $(KERNEL_FEATURE)
-# endif
+ifeq ($(KERNEL_FEATURE), )
+	@cargo build $(MODE_ARG) --offline
+else
+	@cargo build $(MODE_ARG) --feature $(KERNEL_FEATURE)
+endif
 	@echo "build kernel bin finished"
 	
 clean:
@@ -101,7 +101,7 @@ disasm-vim: kernel
 run: run-fat32
 
 all :build-fat32
-	@cp $(KERNEL_BIN) ../kernel_qemu
+	@cp $(KERNEL_BIN) ../kernel-qemu
 	@cp $(BOOTLOADER) ../sbi-qemu
 
 run-inner: build

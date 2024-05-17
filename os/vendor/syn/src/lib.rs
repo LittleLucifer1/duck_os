@@ -249,7 +249,7 @@
 //!   dynamic library libproc_macro from rustc toolchain.
 
 // Syn types in rustdoc of other crates get linked to here.
-#![doc(html_root_url = "https://docs.rs/syn/2.0.63")]
+#![doc(html_root_url = "https://docs.rs/syn/2.0.64")]
 #![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(non_camel_case_types)]
@@ -290,6 +290,7 @@
     clippy::return_self_not_must_use,
     clippy::similar_names,
     clippy::single_match_else,
+    clippy::struct_excessive_bools,
     clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::trivially_copy_pass_by_ref,
@@ -326,6 +327,12 @@ mod bigint;
 #[cfg(feature = "parsing")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 pub mod buffer;
+
+#[cfg(any(
+    all(feature = "parsing", feature = "full"),
+    all(feature = "printing", any(feature = "full", feature = "derive")),
+))]
+mod classify;
 
 mod custom_keyword;
 
@@ -377,6 +384,9 @@ mod file;
 #[cfg(feature = "full")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
 pub use crate::file::File;
+
+#[cfg(all(feature = "full", feature = "printing"))]
+mod fixup;
 
 #[cfg(any(feature = "full", feature = "derive"))]
 mod generics;
@@ -472,6 +482,12 @@ pub use crate::path::{
     AngleBracketedGenericArguments, AssocConst, AssocType, Constraint, GenericArgument,
     ParenthesizedGenericArguments, Path, PathArguments, PathSegment, QSelf,
 };
+
+#[cfg(all(
+    any(feature = "full", feature = "derive"),
+    any(feature = "parsing", feature = "printing")
+))]
+mod precedence;
 
 #[cfg(all(any(feature = "full", feature = "derive"), feature = "printing"))]
 mod print;
@@ -945,8 +961,6 @@ pub fn parse_str<T: parse::Parse>(s: &str) -> Result<T> {
     parse::Parser::parse_str(T::parse, s)
 }
 
-// FIXME the name parse_file makes it sound like you might pass in a path to a
-// file, rather than the content.
 /// Parse the content of a file of Rust code.
 ///
 /// This is different from `syn::parse_str::<File>(content)` in two ways:

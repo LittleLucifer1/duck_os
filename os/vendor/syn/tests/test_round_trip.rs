@@ -68,21 +68,34 @@ fn test_round_trip() {
 }
 
 fn test(path: &Path, failed: &AtomicUsize, abort_after: usize) {
-    let content = fs::read_to_string(path).unwrap();
-
-    let start = Instant::now();
-    let (krate, elapsed) = match syn::parse_file(&content) {
-        Ok(krate) => (krate, start.elapsed()),
-        Err(msg) => {
-            errorf!("=== {}: syn failed to parse\n{:?}\n", path.display(), msg);
-            let prev_failed = failed.fetch_add(1, Ordering::Relaxed);
-            if prev_failed + 1 >= abort_after {
-                process::exit(1);
-            }
-            return;
+    let failed = || {
+        let prev_failed = failed.fetch_add(1, Ordering::Relaxed);
+        if prev_failed + 1 >= abort_after {
+            process::exit(1);
         }
     };
-    let back = quote!(#krate).to_string();
+
+    let content = fs::read_to_string(path).unwrap();
+
+    let (back, elapsed) = match panic::catch_unwind(|| {
+        let start = Instant::now();
+        let result = syn::parse_file(&content);
+        let elapsed = start.elapsed();
+        result.map(|krate| (quote!(#krate).to_string(), elapsed))
+    }) {
+        Err(_) => {
+            errorf!("=== {}: syn panic\n", path.display());
+            failed();
+            return;
+        }
+        Ok(Err(msg)) => {
+            errorf!("=== {}: syn failed to parse\n{:?}\n", path.display(), msg);
+            failed();
+            return;
+        }
+        Ok(Ok(result)) => result,
+    };
+
     let edition = repo::edition(path).parse().unwrap();
 
     rustc_span::create_session_if_not_set_then(edition, |_| {
@@ -138,10 +151,7 @@ fn test(path: &Path, failed: &AtomicUsize, abort_after: usize) {
             }
         };
         if !equal {
-            let prev_failed = failed.fetch_add(1, Ordering::Relaxed);
-            if prev_failed + 1 >= abort_after {
-                process::exit(1);
-            }
+            failed();
         }
     });
 }

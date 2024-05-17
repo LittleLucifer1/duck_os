@@ -1,0 +1,6 @@
+.*/*
+!.github/*
+!.vscode/settings.json
+.idea
+target
+os/.gdb_history

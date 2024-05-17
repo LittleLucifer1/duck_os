@@ -80,8 +80,9 @@ ast_struct! {
 #[cfg(feature = "parsing")]
 pub(crate) mod parsing {
     use crate::attr::Attribute;
+    use crate::classify;
     use crate::error::Result;
-    use crate::expr::{self, Expr, ExprBlock, ExprMacro};
+    use crate::expr::{Expr, ExprBlock, ExprMacro};
     use crate::ident::Ident;
     use crate::item;
     use crate::mac::{self, Macro};
@@ -158,7 +159,7 @@ pub(crate) mod parsing {
                 }
                 let stmt = parse_stmt(input, AllowNoSemi(true))?;
                 let requires_semicolon = match &stmt {
-                    Stmt::Expr(stmt, None) => expr::requires_terminator(stmt),
+                    Stmt::Expr(stmt, None) => classify::requires_semi_to_be_stmt(stmt),
                     Stmt::Macro(stmt) => {
                         stmt.semi_token.is_none() && !stmt.mac.delimiter.is_brace()
                     }
@@ -297,8 +298,8 @@ pub(crate) mod parsing {
             let eq_token: Token![=] = eq_token;
             let expr: Expr = input.parse()?;
 
-            let diverge = if let Some(else_token) = input.parse()? {
-                let else_token: Token![else] = else_token;
+            let diverge = if !classify::expr_trailing_brace(&expr) && input.peek(Token![else]) {
+                let else_token: Token![else] = input.parse()?;
                 let diverge = ExprBlock {
                     attrs: Vec::new(),
                     label: None,
@@ -400,7 +401,7 @@ pub(crate) mod parsing {
 
         if semi_token.is_some() {
             Ok(Stmt::Expr(e, semi_token))
-        } else if allow_nosemi.0 || !expr::requires_terminator(&e) {
+        } else if allow_nosemi.0 || !classify::requires_semi_to_be_stmt(&e) {
             Ok(Stmt::Expr(e, None))
         } else {
             Err(input.error("expected semicolon"))
@@ -409,9 +410,12 @@ pub(crate) mod parsing {
 }
 
 #[cfg(feature = "printing")]
-mod printing {
-    use crate::expr;
+pub(crate) mod printing {
+    use crate::classify;
+    use crate::expr::{self, Expr};
+    use crate::fixup::FixupContext;
     use crate::stmt::{Block, Local, Stmt, StmtMacro};
+    use crate::token;
     use proc_macro2::TokenStream;
     use quote::{ToTokens, TokenStreamExt};
 
@@ -431,7 +435,7 @@ mod printing {
                 Stmt::Local(local) => local.to_tokens(tokens),
                 Stmt::Item(item) => item.to_tokens(tokens),
                 Stmt::Expr(expr, semi) => {
-                    expr.to_tokens(tokens);
+                    expr::printing::print_expr(expr, tokens, FixupContext::new_stmt());
                     semi.to_tokens(tokens);
                 }
                 Stmt::Macro(mac) => mac.to_tokens(tokens),
@@ -447,10 +451,19 @@ mod printing {
             self.pat.to_tokens(tokens);
             if let Some(init) = &self.init {
                 init.eq_token.to_tokens(tokens);
-                init.expr.to_tokens(tokens);
+                if init.diverge.is_some() && classify::expr_trailing_brace(&init.expr) {
+                    token::Paren::default().surround(tokens, |tokens| init.expr.to_tokens(tokens));
+                } else {
+                    init.expr.to_tokens(tokens);
+                }
                 if let Some((else_token, diverge)) = &init.diverge {
                     else_token.to_tokens(tokens);
-                    diverge.to_tokens(tokens);
+                    match &**diverge {
+                        Expr::Block(diverge) => diverge.to_tokens(tokens),
+                        _ => token::Brace::default().surround(tokens, |tokens| {
+                            expr::printing::print_expr(diverge, tokens, FixupContext::new_stmt());
+                        }),
+                    }
                 }
             }
             self.semi_token.to_tokens(tokens);

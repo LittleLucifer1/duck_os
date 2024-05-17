@@ -58,10 +58,6 @@ static EXCLUDE_FILES: &[&str] = &[
     "tests/ui/higher-ranked/builtin-closure-like-bounds.rs",
     "tests/ui/sanitizer/cfi-coroutine.rs",
 
-    // TODO: struct literal in match guard
-    // https://github.com/dtolnay/syn/issues/1527
-    "tests/ui/parser/struct-literal-in-match-guard.rs",
-
     // TODO: `!` as a pattern
     // https://github.com/dtolnay/syn/issues/1546
     "tests/ui/rfcs/rfc-0000-never_patterns/diverges.rs",
@@ -131,6 +127,10 @@ static EXCLUDE_FILES: &[&str] = &[
     "tests/ui/rfcs/rfc-2632-const-trait-impl/const-fns-are-early-bound.rs",
     "tests/ui/rfcs/rfc-2632-const-trait-impl/const-trait-bounds.rs",
     "tests/ui/rfcs/rfc-2632-const-trait-impl/effects/minicore.rs",
+
+    // TODO: `|| .. .method()`
+    "src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/0208_closure_range_method_call.rs",
+    "src/tools/rustfmt/tests/source/issue-4808.rs",
 
     // Compile-fail expr parameter in const generic position: f::<1 + 2>()
     "tests/ui/const-generics/early/closing-args-token.rs",
