@@ -39,8 +39,7 @@ use crate::{
 
 use super::page_fault::PageFaultHandler;
 
-
-pub struct MemeorySet {
+pub struct MemorySet {
     // TODO: areas需不需要加锁？？
     pub areas: VmaRange,
     // 底下没有数据结构拥有页表，所以不用Arc，没有多个所有者
@@ -53,12 +52,12 @@ pub struct MemeorySet {
 }
 
 // 这里没有选择上一把大锁，而是上细粒度锁，上在page_table
-pub static mut KERNEL_SPACE: Option<MemeorySet> = None;
+pub static mut KERNEL_SPACE: Option<MemorySet> = None;
 
 pub fn init_kernel_space() {
     info!("[kernel]: Start to initialize kernel space.");
     unsafe {
-        KERNEL_SPACE = Some(MemeorySet::new_kernel());
+        KERNEL_SPACE = Some(MemorySet::new_kernel());
         KERNEL_SPACE.as_ref().unwrap().activate();
     }
     info!("[kernel]: Kernel space finished!");
@@ -66,7 +65,7 @@ pub fn init_kernel_space() {
 
 // 切换为内核的地址空间
 pub fn kernel_space_activate() {
-    unsafe { KERNEL_SPACE.as_ref().map(MemeorySet::activate); }
+    unsafe { KERNEL_SPACE.as_ref().map(MemorySet::activate); }
 }
 
 extern "C" {
@@ -83,7 +82,7 @@ extern "C" {
     fn ekernel();
 }
 
-impl MemeorySet {
+impl MemorySet {
     /*
         function: 完成内核地址空间的初始化
         TODO: 还没有考虑其他的sections，例如Trampoline
@@ -91,7 +90,7 @@ impl MemeorySet {
         创建好虚拟地址空间，然后固定的映射到先前的物理地址去。
      */
     pub fn new_kernel() -> Self {
-        let mut kernel_memory_set = MemeorySet {
+        let mut kernel_memory_set = MemorySet {
             areas: VmaRange::new(), 
             pt: SyncUnsafeCell::new(PageTable::new()),
             heap_end: 0,
@@ -383,7 +382,7 @@ impl MemeorySet {
     // 在fork, clone, exec 等系统调用中，用于创建一个新的地址空间。
     // 同时做好 COW （copy-on-write）
     pub fn from_user_lazily(&self) -> Self {
-        let mut ms = MemeorySet::new_user();
+        let mut ms = MemorySet::new_user();
         ms.cow_manager.from_other_cow(
             &self.cow_manager, 
             &mut ms.pt.get_unchecked_mut()
@@ -432,7 +431,7 @@ impl MemeorySet {
     }
 
     pub fn from_user(&self) -> Self {
-        let mut ms = MemeorySet::new_user();
+        let mut ms = MemorySet::new_user();
         for (_, vma) in self
             .areas
             .segments

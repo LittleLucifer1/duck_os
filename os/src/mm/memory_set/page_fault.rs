@@ -12,7 +12,7 @@ use riscv::register::scause::Scause;
 
 use crate::mm::{address::{virt_to_vpn, VirtAddr}, page_table::PageTable, pma::Page, type_cast::{PTEFlags, PagePermission}, vma::VirtMemoryAddr};
 
-use super::mem_set::MemeorySet;
+use super::mem_set::MemorySet;
 
 pub trait PageFaultHandler: Send + Sync {
     // 懒分配：已经插入了对应的vma，只是没有做映射和物理帧分配
@@ -21,7 +21,7 @@ pub trait PageFaultHandler: Send + Sync {
         &self,
         _vma: &VirtMemoryAddr,
         _vaddr: VirtAddr,
-        _ms: Option<&MemeorySet>,
+        _ms: Option<&MemorySet>,
         _scause: Scause,
         _pt: &mut PageTable,
     ) {}
@@ -41,7 +41,7 @@ impl PageFaultHandler for UStackPageFaultHandler {
             &self,
             vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
-            _ms: Option<&MemeorySet>,
+            _ms: Option<&MemorySet>,
             _scause: Scause,
             pt: &mut PageTable,
         ) {
@@ -73,7 +73,7 @@ impl PageFaultHandler for UHeapPageFaultHandler {
             &self,
             vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
-            _ms: Option<&MemeorySet>,
+            _ms: Option<&MemorySet>,
             _scause: Scause,
             pt: &mut PageTable,
         ) {
@@ -105,7 +105,7 @@ impl PageFaultHandler for MmapPageFaultHandler {
             &self,
             vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
-            _vm: Option<&MemeorySet>,
+            _vm: Option<&MemorySet>,
             _scause: Scause,
             pt: &mut PageTable,
         ) {
@@ -168,7 +168,7 @@ impl PageFaultHandler for CowPageFaultHandler {
             &self,
             _vma: &VirtMemoryAddr,
             vaddr: VirtAddr,
-            ms: Option<&MemeorySet>,
+            ms: Option<&MemorySet>,
             _scause: Scause,
             pt: &mut PageTable,
         ) {

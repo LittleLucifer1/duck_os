@@ -2,7 +2,7 @@
 
 use alloc::{sync::Weak, string::{String, ToString}, sync::Arc, vec::Vec};
 
-use crate::{fs::fd_table::FdTable, mm::memory_set::mem_set::MemeorySet, sync::SpinLock, syscall::CloneFlags};
+use crate::{fs::fd_table::FdTable, mm::memory_set::mem_set::MemorySet, sync::SpinLock, syscall::CloneFlags};
 
 use super::{context::TaskContext, kstack::Kstack, loader::load_elf, pid::{alloc_pid, Pid}, schedule::push_task_to_schedule, trap::context::{Register, TrapContext}};
 
@@ -11,7 +11,7 @@ pub struct PCB {
     pub tgid: usize, // 组标识符，外部可见的pid
     pub pid: Pid, // 唯一标识符，内部可见的pid
     pub kernel_stack: Kstack,
-    pub vm: Arc<SpinLock<MemeorySet>>,
+    pub vm: Arc<SpinLock<MemorySet>>,
     pub fd_table: Arc<SpinLock<FdTable>>,
     pub inner: Arc<SpinLock<PCBInner>>,
 }
@@ -30,7 +30,7 @@ unsafe impl Send for PCBInner {}
 
 impl PCB {
     pub fn elf_data_to_pcb(cwd: &str, data: &[u8]) -> Self {
-        let mut vm = MemeorySet::new_user();
+        let mut vm = MemorySet::new_user();
         let (entry_point, user_stack, _) = load_elf(data, &mut vm, Vec::new(), Vec::new());
         let kernel_stack = Kstack::init_kernel_stack();
         let ks_top = kernel_stack.push_trap_cx(TrapContext::init_trap_cx(entry_point, user_stack));

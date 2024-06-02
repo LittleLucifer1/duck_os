@@ -7,7 +7,7 @@ use crate::{
     config::mm::{USER_STACK_TOP, USER_STACK_SIZE}, 
     mm::{
         address::{align_up, vaddr_offset}, 
-        memory_set::{mem_set::MemeorySet, page_fault::{UHeapPageFaultHandler, UStackPageFaultHandler}}, 
+        memory_set::{mem_set::MemorySet, page_fault::{UHeapPageFaultHandler, UStackPageFaultHandler}}, 
         type_cast::MapPermission, 
         vma::{MapType, VirtMemoryAddr, VmaType}
     }
@@ -29,7 +29,7 @@ pub fn check_magic(elf: &xmas_elf::ElfFile) -> bool {
 }
 
 // 返回值：(entry_point, ustack_sp, StackLayout)
-pub fn load_elf(data: &[u8], vm: &mut MemeorySet, args: Vec<String>, envs: Vec<String>) -> (usize, usize, Option<StackLayout>) {
+pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<String>) -> (usize, usize, Option<StackLayout>) {
     let elf = xmas_elf::ElfFile::new(&data).unwrap();
     // 检查魔数
     if !check_magic(&elf) {

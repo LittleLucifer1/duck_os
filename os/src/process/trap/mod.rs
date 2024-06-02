@@ -2,13 +2,9 @@ use core::{arch::global_asm, panic};
 
 use log::info;
 use riscv::register::{mtvec, scause::{self, Exception, Trap}, sstatus, stval, stvec};
-
 use crate::{process::hart::cpu::get_cpu_id, syscall::syscall};
-
 use self::context::TrapContext;
-
 use super::hart::cpu::get_cpu_local;
-
 pub mod context;
 
 global_asm!(include_str!("trap.S"));
