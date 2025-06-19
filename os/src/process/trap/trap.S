@@ -20,6 +20,7 @@ __alltraps:
 __trap_entry:
     # sp -> kernel stack
     addi sp, sp, -35*8
+    # sd x1 -> sp + 8
     sd x1, 1*8(sp)
     .set n, 3
     .rept 29

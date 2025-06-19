@@ -52,5 +52,5 @@ pub fn alloc_pid() -> Option<Pid> {
 }
 
 pub fn dealloc_pid(pid: usize) {
-    PID_ALLOCATOR.lock().dealloc(pid)
+    PID_ALLOCATOR.lock().dealloc_pid(pid)
 }

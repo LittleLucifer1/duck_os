@@ -5,3 +5,4 @@ pub mod stack_trace;
 pub mod flag_check;
 pub mod string;
 pub mod path;
+pub mod random;

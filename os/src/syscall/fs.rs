@@ -1,25 +1,39 @@
 //!文件系统相关系统调用
 
-use core::{ops::Add, ptr};
+use core::{ops::Add, ptr::{self}};
 
 use alloc::{string::ToString, sync::Arc};
 use log::{debug, info};
 
 use crate::{
-    config::fs::SECTOR_SIZE, fs::{dentry::{path_to_dentry, Dentry}, fd_table::FdInfo, file_system::FILE_SYSTEM_MANAGER, info::{InodeMode, OpenFlags, TimeSpec}, inode::InodeDev, pipe::make_pipes, AT_FDCWD}, process::hart::{cpu::{get_cpu_id, get_cpu_local}, env::SumGuard}, syscall::error::Errno, utils::{path::{cwd_and_path, dentry_name, format_path, is_relative_path, parent_path, ptr_and_dirfd_to_path}, 
-        string::c_ptr_to_string}
+    config::fs::SECTOR_SIZE, 
+    fs::{
+        dentry::{path_to_dentry, Dentry, DENTRY_CACHE}, 
+        fd_table::FdInfo, file::SeekFrom, 
+        file_system::FILE_SYSTEM_MANAGER, 
+        info::{InodeMode, OpenFlags, TimeSpec}, 
+        inode::InodeDev, pipe::make_pipes, AT_FDCWD
+    }, 
+    process::hart::{
+        cpu::{get_cpu_id, get_cpu_local}, env::SumGuard
+    }, 
+    syscall::error::Errno, 
+    utils::{
+        path::{cwd_and_path, dentry_name, format_path, is_relative_path, parent_path, ptr_and_dirfd_to_path}, 
+        string::c_ptr_to_string
+    }
 };
 use super::{error::SyscallResult, Dirent64, Dirent64Type, FSFlags, FSType, UtsName, STAT};
-///     page_cache or file.write()函数
 
 /* Description: 从buf所在的地址上将len长度的数据写到fd中
     注意事项：1.要检查buf的地址是否合法。
-        2. 实际写的数据可能小于count，因为各种原因: RLIMIT_FSIZE资源限制、信号打断、物理媒介没有足够的空间（未考虑）
+        2. 实际写的数据可能小于 count，因为各种原因: RLIMIT_FSIZE资源限制、信号打断、物理媒介没有足够的空间（未考虑）
         3. 对于seekable文件，offset要随着写入的数据多少而变化。
         4. 如果是open with O_APPEND，则file offset要先设置为the end of file，再写入。
+    TODO： 暂时不支持稀疏文件
 */
-pub fn sys_write(fd: usize, buf: usize, len: usize) -> SyscallResult {
-    info!("[sys_write]: fd {}, len {}, buf address: 0x{:x}", fd, len, buf);
+pub fn sys_write(fd: usize, buf: usize, count: usize) -> SyscallResult {
+    info!("[sys_write]: fd {}, count {}, buf address: 0x{:x}", fd, count, buf);
     let fd_table = get_cpu_local(get_cpu_id())
         .current_pcb_clone()
         .as_ref()
@@ -36,22 +50,24 @@ pub fn sys_write(fd: usize, buf: usize, len: usize) -> SyscallResult {
         locked_fd_table.fd_table.get(&fd).cloned().ok_or(Errno::EBADF)?
     };
     let flags = file_info.flags.clone();
+    info!("[sys_write]: file flags is {:#?}", flags);
     if !flags.is_writable() {
         // Unsafe: Titanix中的这个值是EPERM，但是根据手册我认为是这个
         return Err(Errno::EBADF);
     }
-    if len == 0 {
+    if count == 0 {
         return Ok(0);
     }
     let _sum = SumGuard::new();
     // TODO: 检查buf的地址，如果缺页，需要有一个中断，然后再读
-    let buf = unsafe { core::slice::from_raw_parts(buf as *const u8, len)};
+    let buf = unsafe { core::slice::from_raw_parts(buf as *const u8, count)};
     let ret = file_info.file.write(buf, flags);
     ret
 }
 
 /* Description: read from a file descriptor
     注意事项：要修改文件的pos位置
+    TODO： 暂时不支持稀疏文件
 */
 pub fn sys_read(fd: usize, buf: usize, count: usize) -> SyscallResult {
     info!("[sys_read]: fd {}, count {}, buf address: 0x{:x}", fd, count, buf);
@@ -84,7 +100,7 @@ pub fn sys_read(fd: usize, buf: usize, count: usize) -> SyscallResult {
 }
 
 /* Description: Change working directory 
-    TODO：更新时间
+    TODO：更新时间  DOWN：好像是已经做了这个操作
 */
 pub fn sys_chdir(path: usize) -> SyscallResult {
     info!("[sys_chdir]: path address is 0x{:x}", path);
@@ -101,7 +117,7 @@ pub fn sys_chdir(path: usize) -> SyscallResult {
     }
     info!("[sys_chdir]: path is {:?}", &path_ptr);
     // 2.找到path对应的inode,判断是否是DIR
-    let dentry = path_to_dentry(&path_str).ok_or(Errno::ENOENT)?;
+    let dentry = path_to_dentry(&path_str)?.ok_or(Errno::ENOENT)?;
     if dentry.metadata().inner.lock().d_inode.metadata().i_mode != InodeMode::Directory {
         return Err(Errno::ENOTDIR);
     } else {
@@ -125,7 +141,7 @@ pub fn sys_dup(oldfd: usize) -> SyscallResult {
         let file = Arc::clone(&fd_info.file);
         let mut flags = fd_info.flags.clone();
         flags.remove(OpenFlags::O_CLOEXEC);
-        let new_fd = fd_table_lock.insert_get_fd(FdInfo::new(file, flags));
+        let new_fd = fd_table_lock.insert_get_fd(FdInfo::new(file, flags))?;
         info!("[sys_dup]: The newfd is {}", new_fd);
         new_fd
     } else {
@@ -155,6 +171,7 @@ pub fn sys_dup3(oldfd: usize, newfd: usize, flags: u32) ->SyscallResult {
         let mut old_flags = fd_info.flags.clone();
         old_flags.set(OpenFlags::O_CLOEXEC, flags.contains(OpenFlags::O_CLOEXEC));
         // TODO: 目前只考虑了没有被分配和被分配的情况。还有可能fd的值会超过限制！
+        // DOWN: 问题已经解决
         if !fd_table_lock.insert_spec_fd(newfd, FdInfo::new(file.clone(), old_flags.clone()))? {
             // 1.关闭这个fd，之后再重新分配
             fd_table_lock.close(newfd);
@@ -196,6 +213,7 @@ pub fn sys_getcwd(buf: usize, len: usize) -> SyscallResult {
 /* Description: get directory entries
     注意事项: 成功时，返回读入的bytes值
     TODO：File可能没有inode？？？？可能有部分的File没有吧，我现在还不知道！
+    DOWN: 确实可能没有，但是一般都有，例如内存中的文件，虽然有，但实际上没有
 */
 pub fn sys_getdents64(fd: usize, dirp: usize, count: usize) -> SyscallResult {
     // TODO: 先检查地址dirp在用户空间是否有效,如果无效，return EFAULT
@@ -204,7 +222,7 @@ pub fn sys_getdents64(fd: usize, dirp: usize, count: usize) -> SyscallResult {
     let current_task = get_cpu_local(get_cpu_id()).current_pcb_clone().unwrap();
     let fd_table_lock = current_task.fd_table.lock();
     let file = fd_table_lock.fd_table.get(&fd).ok_or(Errno::EBADF)?;
-    let dentry = Arc::clone(&file.file.metadata().f_dentry);
+    let dentry = Arc::clone(&file.file.metadata().f_dentry.as_ref().unwrap());
     let inode = Arc::clone(&dentry.metadata().inner.lock().d_inode);
 
     if inode.metadata().i_mode != InodeMode::Directory {
@@ -225,7 +243,6 @@ pub fn sys_getdents64(fd: usize, dirp: usize, count: usize) -> SyscallResult {
             let mode: Dirent64Type = c_inode.metadata().i_mode.into();
             let size = Dirent64::dirent_size() + name.len() + 1;
             let dirent64 = Dirent64::load_dirent64(ino as u64, mode.bits(), size as u16);
-            // println!("dirent64: {:#?}", dirent64);
             if buf_off + size > count {
                 debug!("[sys_getdents64]: Result buffer is too small");
                 break;
@@ -311,7 +328,7 @@ pub fn sys_openat(dirfd: isize, pathname: *const u8, flags: u32, _mode: usize) -
     info!("[sys_openat]: path is {:?}", path);
     let final_dentry: Arc<dyn Dentry>;
     // 1.如果文件存在
-    if let Some(dentry) = path_to_dentry(&path) {
+    if let Some(dentry) = path_to_dentry(&path)? {
         let file_kind = dentry.metadata().inner.lock().d_inode.metadata().i_mode;
         if flags.contains(OpenFlags::O_TRUNC) {
             if file_kind == InodeMode::Regular && (flags.is_writable()) {
@@ -331,7 +348,7 @@ pub fn sys_openat(dirfd: isize, pathname: *const u8, flags: u32, _mode: usize) -
     } else { 
         // 2.如果文件不存在
         if flags.contains(OpenFlags::O_CREAT) {
-            let fa_dentry = path_to_dentry(&parent_path(&path)).unwrap();
+            let fa_dentry = path_to_dentry(&parent_path(&path))?.unwrap();
             let name = dentry_name(&path);
             final_dentry = fa_dentry.create(Arc::clone(&fa_dentry), name, InodeMode::Regular)?;
         }
@@ -347,17 +364,35 @@ pub fn sys_openat(dirfd: isize, pathname: *const u8, flags: u32, _mode: usize) -
 
 /* Description: close a file descriptor
     注意事项：最后一个文件的引用：和unlink有关，暂时不知道目前的实现满不满足语义
+    DOWN: 实现了部分的 unlink 语义，但是不确定实现是否正确？？？
 */
 pub fn sys_close(fd: usize) -> SyscallResult {
     info!("[sys_close]: fd {}", fd);
     let current_task = get_cpu_local(get_cpu_id()).current_pcb_clone().unwrap();
     let mut table = current_task.fd_table.lock();
-    if table.fd_table.get(&fd).is_none() {
-        Err(Errno::EBADF)
-    } else {
+    if let Some(fd_info) = table.fd_table.get(&fd) {
+        fd_info.file.close()?;
         table.close(fd);
         Ok(0)
+    } else {
+        Err(Errno::EBADF)
     }
+}
+
+// Description: truncate a file to specified length
+pub fn sys_ftruncate(fd: usize, len: isize) -> SyscallResult {
+    info!("[sys_ftruncate]: fd: {}, len: {}", fd, len);
+    let current_task = get_cpu_local(get_cpu_id()).current_pcb_clone().unwrap();
+    let table = current_task.fd_table.lock();
+    if let Some(fd_info) = table.fd_table.get(&fd) {
+        let file = fd_info.file.clone();
+        // TODO：这里需要判断文件是否可读或者可写？？？？
+        // TODO: 还需要修改时间相关的量
+        file.truncate(len as usize)?;
+    } else {
+        return Err(Errno::EBADF);
+    }
+    Ok(0)
 }
 
 /* Description: create a directory
@@ -367,10 +402,10 @@ pub fn sys_mkdirat(dirfd: isize, pathname: *const u8, _mode: usize) -> SyscallRe
     // TODO: 检查pathname的地址
     let _sum = SumGuard::new();
     let path = ptr_and_dirfd_to_path(dirfd, pathname)?;
-    if path_to_dentry(&path).is_some() {
+    if path_to_dentry(&path)?.is_some() {
         return Err(Errno::EEXIST);
     }
-    let fa_dentry = path_to_dentry(&parent_path(&path)).unwrap();
+    let fa_dentry = path_to_dentry(&parent_path(&path))?.unwrap();
     if fa_dentry.metadata().inner.lock().d_inode.metadata().i_mode != InodeMode::Directory {
         debug!("[sys_mkdirat] parent is not a directory.");
         return Err(Errno::ENOTDIR);
@@ -387,8 +422,9 @@ pub fn sys_mkdirat(dirfd: isize, pathname: *const u8, _mode: usize) -> SyscallRe
 
 /* Description:  delete a name and possibly the file it refers to
     注意事项：1.暂时没有考虑实现软链接和硬链接，所以这里的实现稍微简单点。之后如果时间充裕可以考虑实现！
-        2. 可以去思考一下 unlink 删除缓存索引和释放资源的区别
+        2. 可以去思考一下 unlink 删除缓存索引和释放资源的区别 DONN!
         3. 理论上来讲，如果inode要释放，则需要它的引用计数 = 0, 所以这就要小心使用Arc/Weak指针。这是一个稍微比较复杂的问题。
+        DOWN!
 */
 pub fn sys_unlinkat(dirfd: isize, pathname: *const u8, flags: u32) -> SyscallResult {
     info!("[sys_unlinkat]: dirfd {}, pathname addr: 0x{:x}", dirfd, pathname as usize);
@@ -396,7 +432,13 @@ pub fn sys_unlinkat(dirfd: isize, pathname: *const u8, flags: u32) -> SyscallRes
     let _sum = SumGuard::new();
     let path = ptr_and_dirfd_to_path(dirfd, pathname)?;
     info!("[sys_unlinkat]: path is {:?}", path);
-    let dentry = path_to_dentry(&path);
+    let current_task = get_cpu_local(get_cpu_id()).current_pcb_clone().unwrap();
+    let cwd = current_task.inner.lock().cwd.clone();
+    // 不能删除当前进程的工作目录
+    if path == cwd {
+        return Err(Errno::EBUSY);
+    }
+    let dentry = path_to_dentry(&path)?;
     if dentry.is_none() {
         return Err(Errno::ENOENT);
     }
@@ -413,7 +455,7 @@ pub fn sys_unlinkat(dirfd: isize, pathname: *const u8, flags: u32) -> SyscallRes
                 }
                 let pa_dirent = parent_dirent.unwrap().upgrade().unwrap();
                 drop(dentry_inner);
-                pa_dirent.unlink(Arc::clone(&dentry));
+                pa_dirent.unlink(Arc::clone(&dentry))?;
             } else {
                 return Err(Errno::ENOTEMPTY);
             }
@@ -422,7 +464,7 @@ pub fn sys_unlinkat(dirfd: isize, pathname: *const u8, flags: u32) -> SyscallRes
         }
     } else {
         let mut inner_lock = dentry_inner.d_inode.metadata().inner.lock();
-        // TODO：这里还没完善有关时间的相关处理，此处的时间处理应该是 时间归0
+        // TODO：这里还没完善有关时间的相关处理，此处的时间处理应该是 时间归 0
         inner_lock.i_atime = TimeSpec::new();
         inner_lock.i_ctime = TimeSpec::new();
         inner_lock.i_mtime = TimeSpec::new();
@@ -433,21 +475,90 @@ pub fn sys_unlinkat(dirfd: isize, pathname: *const u8, flags: u32) -> SyscallRes
         } else {
             let pa_dirent = parent_dirent.unwrap().upgrade().unwrap();
             drop(dentry_inner);
-            pa_dirent.unlink(Arc::clone(&dentry));
+            pa_dirent.unlink(Arc::clone(&dentry))?;
         }
     }
     Ok(0)
 }
 
+// Description: 对已有的文件创建一个新的硬链接
+// 注意事项：
+// TODO: 有两个高级标志还未实现，是 AT_EMPTY_PATH && AT_SYMLINK_FOLLOW
+pub fn sys_linkat(old_dirfd: isize, old_path: *const u8, new_dirfd: isize, new_path: *const u8, flags: u32) -> SyscallResult {
+    info!(
+        "[sys_linkat]: old_dirfd is {}, old_path address is 0x{:x}, new_dirfd is {}, new_path address is 0x{:x}", 
+        old_dirfd, old_path as usize, new_dirfd, new_path as usize
+    );
+    let _sum = SumGuard::new();
+    let old_path = ptr_and_dirfd_to_path(old_dirfd, old_path)?;
+    let new_path = ptr_and_dirfd_to_path(new_dirfd, new_path)?;
+    info!("[sys_linkat]: The old path is {:?}, new path is {:?}", old_path, new_path);
+    if DENTRY_CACHE.lock().contains_key(&new_path) {
+        return Err(Errno::EEXIST);
+    }
+    let old_dentry = path_to_dentry(&old_path)?.ok_or(Errno::ENOENT)?;
+    if old_dentry.metadata().inner.lock().d_inode.metadata().i_mode.ne(&InodeMode::Regular) {
+        return Err(Errno::EPERM);
+    }
+    let new_parent_dentry = path_to_dentry(&parent_path(&new_path))?.ok_or(Errno::ENOENT)?;
+    if new_parent_dentry.metadata().inner.lock().d_inode.metadata().i_mode.ne(&InodeMode::Directory) {
+        return Err(Errno::ENOTDIR)
+    }
+    old_dentry.link(new_parent_dentry, dentry_name(&new_path))?;
+    Ok(0)
+}
+
+// Description: 创建一个名为 link_path 的软链接文件，其中的内容包括了target内容
+pub fn sys_symlinkat(target: *const u8, new_dirfd: isize, link_path: *const u8) -> SyscallResult {
+    info!(
+        "[sys_symlinkat]: target address is 0x{:x}, new_dirfd is {}, linkpath address is 0x{:x},",
+        target as usize, new_dirfd, link_path as usize,
+    );
+    let _sum = SumGuard::new();
+    // TODO: 这里的 ptr_and_dirfd_to_path中有一些错误需要判断，并返回的
+    let link_path = ptr_and_dirfd_to_path(new_dirfd, link_path)?;
+    let target = c_ptr_to_string(target);
+    info!("[sys_symlinkat]: The target content is {:?}, the link_path is {:?}", target, link_path);
+    if DENTRY_CACHE.lock().contains_key(&link_path) {
+        return Err(Errno::EEXIST);
+    }
+    let fa_dentry = path_to_dentry(&parent_path(&link_path))?.ok_or(Errno::ENOENT)?;
+    fa_dentry.symbol_link(dentry_name(&link_path), &target)?;
+    Ok(0)    
+}
+
+// Description: read value of a symbolic link
+// 注意事项：无，主要是通过 ext4中的 api 来管理
+pub fn sys_readlinkat(dirfd: isize, pathname: *const u8, buf: *mut u8, bufsize: isize) -> SyscallResult {
+    info!(
+        "[sys_readlinkat]: dirfd is {}, pathname address is 0x{:x}, buf_size is {}", 
+        dirfd, pathname as usize, bufsize
+    );
+    let _sum = SumGuard::new();
+    if bufsize < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let bufsize = bufsize as usize;
+    let path = ptr_and_dirfd_to_path(dirfd, pathname)?;
+    let dentry = path_to_dentry(&path)?.ok_or(Errno::ENOENT)?;
+    let buf: &mut[u8] = unsafe { core::slice::from_raw_parts_mut(buf, bufsize) };
+    if dentry.metadata().inner.lock().d_inode.metadata().i_mode.ne(&InodeMode::Link) {
+        return Err(Errno::EINVAL);
+    }
+    dentry.read_symlink(buf)?;
+    Ok(0)
+}
+
 /* Description: mount filesystem
-    source: 路径名，指向设备 或者 目录/文件/空字符串
-    target: location(目录或者文件)
+    source: 需要挂载的东西的位置，指向设备 或者 目录/文件/空字符串
+    target: 被挂载的位置(目录或者文件)
     fs_type: 就是文件系统的类型
     data: 暂时没啥用
     注意事项：这里基本上没有考虑任何的挂载标识！
+    Detail：系统调用只处理路径，FILE_MANAGER只加入挂载点，不同的FS自己处理不同的初始化，
 */
 pub fn sys_mount(source: *const u8, target: *const u8, fs_type: *const u8, flags: u32, _data: usize) -> SyscallResult {
-    info!( "[sys_mount]: source addr: 0x{:x}, target addr: 0x{:?}, fs_type addr: 0x{:?}", 
+    info!( "[sys_mount]: source addr: 0x{:x}, target addr: 0x{:x}, fs_type addr: 0x{:x}", 
         source as usize, target as usize, fs_type as usize);
     let _sum = SumGuard::new();
     // TODO：检查地址的有效性
@@ -458,7 +569,8 @@ pub fn sys_mount(source: *const u8, target: *const u8, fs_type: *const u8, flags
     let flags = FSFlags::from_bits(flags & 511).ok_or(Errno::EINVAL)?;
     info!("[sys_mount]: The dev_path: {:?}, tar_path: {:?}", dev_path, tar_path);
 
-    let dev_dentry = path_to_dentry(&dev_path);
+    // TODO： 实现的有问题，按linux语义来说，有虚拟的/dev路径指定硬件，但是我们没有，所以这里还是有点问题
+    let dev_dentry = path_to_dentry(&dev_path)?;
     let dev = match dev_dentry {
         Some(dentry) => {
             let inode = dentry.metadata().inner.lock().d_inode.clone();
@@ -472,9 +584,7 @@ pub fn sys_mount(source: *const u8, target: *const u8, fs_type: *const u8, flags
         },
         None => None
     };
-    let _tar_dentry = path_to_dentry(&tar_path).ok_or(Errno::EACCES)?;
-    FILE_SYSTEM_MANAGER.mount(&tar_path, &dev_path, dev, fs_type, flags);
-    
+    FILE_SYSTEM_MANAGER.mount(&tar_path, &dev_path, dev, fs_type, flags)?;
     Ok(0)
 }
 
@@ -496,24 +606,52 @@ pub fn sys_umount2(target: *const u8, _flags: usize) -> SyscallResult {
 }
 
 /* Description: reposition read/write file offset
-
+    注意事项：允许 offset 放在 EOF 之后，会产生空洞
 */
 #[allow(unused)]
-pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallResult {
-    
-    Ok(0)
+pub fn sys_lseek(fd: usize, offset: isize, whence: u8) -> SyscallResult {
+    info!("[sys_lseek]: fd: {}, offset: {}, whence: {}", fd, offset, whence);
+    let current_task = get_cpu_local(get_cpu_id()).current_pcb_clone().unwrap();
+    let fd_table_lock = current_task.fd_table.lock();
+    let fdinfo = fd_table_lock.fd_table.get(&fd).ok_or(Errno::EBADF)?;
+    if !fdinfo.flags.is_readable() {
+        return Err(Errno::EACCES);
+    }
+    let mut cur_offset: usize = 0;
+    const SEEK_START: u8 = 0;
+    const SEEK_CUR: u8 = 1;
+    const SEEK_END: u8 = 2;
+    match whence {
+        SEEK_START => {
+            if offset < 0 {
+                return Err(Errno::EINVAL);
+            }
+            cur_offset = fdinfo.file.seek(SeekFrom::Start(offset as usize))?;
+            
+        }
+        SEEK_CUR => {
+            cur_offset = fdinfo.file.seek(SeekFrom::Current(offset))?;
+        }
+        SEEK_END => {
+            cur_offset = fdinfo.file.seek(SeekFrom::End(offset))?;
+        }
+        _  => { return Err(Errno::EINVAL); }
+    }
+    info!("[sys_lseek] Final offset is {}", cur_offset);
+    Ok(cur_offset)
 }
 
 // 目前只用于创建管道，其实还有其他的作用，后续可能需要修改相关的函数接口
 // 没有实现文件的meta,因为可能需要修改相关的数据结构。同时，在make_pipes中的Error的报错机制还不是很完善，稍微有点不完善。
+// Description: 创建 pipe，这里的不完善指的是 传统的用户地址检查 和 暂时不太需要处理的 flags 
 pub fn sys_pipe2(buf: *mut i32, flags: u32) -> SyscallResult {
     info!("[sys_pipe2]: buf addr: {:#x}, flags: {}", buf as usize, flags);
     let flags = OpenFlags::from_bits_truncate(flags);
     let (pipe_read, pipe_write) = make_pipes()?;
     let current_task = get_cpu_local(get_cpu_id()).current_pcb_clone().unwrap();
     let mut table = current_task.fd_table.lock();
-    let read_fd = table.insert_get_fd(FdInfo::new(pipe_read, flags | OpenFlags::O_RDONLY));
-    let write_fd = table.insert_get_fd(FdInfo::new(pipe_write, flags | OpenFlags::O_WRONLY));
+    let read_fd = table.insert_get_fd(FdInfo::new(pipe_read, flags | OpenFlags::O_RDONLY))?;
+    let write_fd = table.insert_get_fd(FdInfo::new(pipe_write, flags | OpenFlags::O_WRONLY))?;
     
     let _sum  = SumGuard::new();
     // TODO: 检查地址
@@ -521,5 +659,40 @@ pub fn sys_pipe2(buf: *mut i32, flags: u32) -> SyscallResult {
     buf[0] = read_fd as i32;
     buf[1] = write_fd as i32;
     info!("[sys_pipe2]: read_fd: {}, write_fd: {}", read_fd, write_fd);
+    Ok(0)
+}
+
+// Description: Change the name or location of a file
+pub fn sys_renameat2(old_dirfd: isize, old_path: *const u8, new_dirfd: isize, new_path: *const u8, flags: u32) -> SyscallResult {
+    info!(
+        "[sys_renameat2]: old dirfd is {}, old_path address is 0x{:x}, new dirfd is {}, new_path address is 0x{:x}, flags is {}",
+        old_dirfd, old_path as usize, new_dirfd, new_path as usize, flags
+    );
+    let _sum = SumGuard::new();
+    // TODO：检查path是否为空指针？？？
+    let old_path = ptr_and_dirfd_to_path(old_dirfd, old_path)?;
+    let new_path = ptr_and_dirfd_to_path(new_dirfd, new_path)?;
+    info!("[sys_renameat2]: old_path is {:?}, new_path is {:?}", old_path, new_path);
+    let old_pa_dentry = path_to_dentry(&parent_path(&old_path))?.ok_or(Errno::ENOENT)?;
+    let new_pa_dentry = path_to_dentry(&parent_path(&new_path))?.ok_or(Errno::ENOENT)?;
+    let old_name = dentry_name(&old_path);
+    let new_name = dentry_name(&new_path);
+    let old_inode_ino = old_pa_dentry.metadata().inner.lock().d_inode.metadata().i_ino;
+    let new_inode_ino = new_pa_dentry.metadata().inner.lock().d_inode.metadata().i_ino;
+    // 两个路径指向同一个 inode，则啥也不做
+    if old_inode_ino == new_inode_ino {
+        return Ok(0);
+    }
+    let old_mode = old_pa_dentry.metadata().inner.lock().d_inode.metadata().i_mode;
+    let new_mode = new_pa_dentry.metadata().inner.lock().d_inode.metadata().i_mode;
+    if old_mode != new_mode {
+        return match (old_mode, new_mode) {
+            (InodeMode::Regular, InodeMode::Directory) => Err(Errno::EISDIR),
+            (InodeMode::Directory, InodeMode::Regular) => Err(Errno::ENOTDIR),
+            _ => todo!()
+        }
+    }
+    old_pa_dentry.rename(old_name, new_pa_dentry, new_name)?;
+
     Ok(0)
 }

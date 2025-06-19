@@ -79,7 +79,7 @@ impl Fat32FileSystem {
         let r_dentry: Arc<dyn Dentry> = Arc::new(root_dentry);
         DENTRY_CACHE.lock().insert(mount_point.to_string(), r_dentry.clone());
         // 5. 让root_dentry 加载所有的子结点
-        r_dentry.load_all_child(Arc::clone(&r_dentry));
+        r_dentry.load_all_child(Arc::clone(&r_dentry)).expect("[fat_fs.rs] Wrong");
         // r_dentry.list_child();
         Self {
             meta: FileSystemMeta {

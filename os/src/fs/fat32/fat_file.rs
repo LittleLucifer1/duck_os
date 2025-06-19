@@ -14,7 +14,7 @@ use super::{block_cache::get_block_cache,fat::{alloc_cluster, find_all_cluster, 
     这里实现的是磁盘上的文件读写。在实际读写文件时，首先通过open函数打开文件，即应该是把文件内容加载到内存中，
     然后通过调用 trait File中的函数进行读写，Titanix中是利用了 page，
 */
-// 磁盘上的文件，
+// 磁盘上的文件，只有Inode可以找到它
 pub struct FatDiskFile {
     pub fat_info: Arc<FatInfo>,
     clusters: Vec<usize>,
@@ -231,7 +231,10 @@ impl File for FatMemFile {
             if file_size <= file_offset || buf_offset >= buf_len {
                 break;
             }
-            let page = page_cache.find_page(file_offset, Weak::clone(&self.meta.f_inode));
+            let page = page_cache.find_page_and_create(
+                file_offset,
+                Some(Weak::clone(&self.meta.f_inode))
+            ).unwrap();
             let page_offset = file_offset % PAGE_SIZE;
             let mut byte = PAGE_SIZE - page_offset;
             
@@ -271,7 +274,10 @@ impl File for FatMemFile {
         loop {
             // Unsafe: 这里上了一把锁，目前感觉好像没有必要，不过如果没有问题，暂时不处理这个。
             // let mut inner_lock = inode.metadata().inner.lock();
-            let page = page_cache.find_page(file_offset, Weak::clone(&self.meta.f_inode));
+            let page = page_cache.find_page_and_create(
+                file_offset, 
+                Some(Weak::clone(&self.meta.f_inode))
+            ).unwrap();
             let page_offset = file_offset % PAGE_SIZE;
             let mut byte = PAGE_SIZE - page_offset;
             if byte + buf_offset > max_len {

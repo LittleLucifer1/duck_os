@@ -1,6 +1,8 @@
 //!
 //! 
 
+use super::mm::PAGE_SIZE;
+
 // Default: 一个扇区的大小是512字节。其实这个大小应该从bpb中读出来的。
 pub const SECTOR_SIZE: usize = 512;
 
@@ -20,7 +22,10 @@ pub const ROOT_CLUSTER_NUM: usize = 2;
 pub const MAX_DIRENT_PER_SECTOR: usize = 16;
 
 // 最大的Fd数
-pub const MAX_FD: usize = 200;
+pub const MAX_FD: usize = 256;
 
 // 管道缓冲区最大字节数
 pub const MAX_PIPE_BUFFER: usize = 1024 * 8; // 8 kb
+
+// 默认的 Pipe buf 的大小
+pub const PIPE_BUF_LEN: usize = 16 * PAGE_SIZE;

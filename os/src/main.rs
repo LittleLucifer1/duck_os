@@ -14,6 +14,7 @@ use process::hart::cpu;
 
 use crate::process::hart;
 
+// 允许模块中定义的宏在其他模块中使用
 #[macro_use]
 mod console;
 mod lang_items;
@@ -33,6 +34,8 @@ pub mod boards;
 extern crate alloc;
 extern crate bitmap_allocator;
 
+// board 模块的内容不在默认的 board.rs 或 board/mod.rs 中，
+// 而是在 boards/qemu.rs 文件中 。
 #[path = "boards/qemu.rs"]
 mod board;
 
@@ -40,6 +43,7 @@ global_asm!(include_str!("entry.S"));
 
 /// clear BSS segment
 pub fn clear_bss() {
+// 这两个符号是外部定义的，用 C 的方式调用它们
     extern "C" {
         fn sbss();
         fn ebss();
@@ -94,7 +98,7 @@ pub fn rust_main() {
             mm::init();
             process::trap::init_stvec();
             driver::init_block_device();
-            // block_device_test();
+            // driver::block_device_test();
             // unsafe {
             //     sstatus::set_sum();
             // }

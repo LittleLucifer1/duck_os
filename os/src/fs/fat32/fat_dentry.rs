@@ -4,7 +4,7 @@ use core::fmt::Debug;
 
 use alloc::{collections::BTreeMap, string::{String, ToString}, sync::Arc, vec::Vec};
 
-use crate::{config::fs::ROOT_CLUSTER_NUM, fs::{dentry::{Dentry, DentryMeta, DentryMetaInner, DENTRY_CACHE}, file::{File, FileMeta, FileMetaInner, SeekFrom}, info::{InodeMode, OpenFlags}, inode::Inode, page_cache::PageCache}, sync::SpinLock, syscall::error::OSResult, utils::path::{cwd_and_name, dentry_name}};
+use crate::{config::fs::ROOT_CLUSTER_NUM, fs::{dentry::{Dentry, DentryMeta, DentryMetaInner, DENTRY_CACHE}, file::{File, FileMeta, FileMetaInner, SeekFrom}, info::{InodeMode, OpenFlags}, inode::Inode, page_cache::PageCache}, sync::SpinLock, syscall::error::{Errno, OSResult}, utils::path::{cwd_and_name, dentry_name}};
 
 use super::{block_cache::get_block_cache, data::{parse_child, DirEntry}, fat::{find_all_cluster, FatInfo}, fat_file::FatMemFile, fat_inode::{FatInode, NxtFreePos, NXTFREEPOS_CACHE}, utility::cluster_to_sector, DirEntryStatus};
 
@@ -55,33 +55,6 @@ impl Dentry for FatDentry {
         &self.meta
     }
 
-    // Assumption: path是合法的，format过的
-    // function: 创建子inode和子目录，同时将数据都写在了磁盘上。
-    // return: 子目录 Arc<dyn Dentry>
-    // 在openat函数和mkdir函数中均有使用
-    fn mkdir(&self, path: &str, mode: InodeMode) -> Arc<dyn Dentry> {
-        let inode = Arc::clone(&self.meta.inner.lock().d_inode);
-        let child_inode = FatInode::mkdir(
-            Arc::clone(&inode), 
-            path, 
-            mode, 
-            Arc::clone(&self.fat_info));
-        Arc::new(FatDentry::new_from_inode(child_inode,self.fat_info.clone(), path))
-    }
-
-    // TODO: 这个函数和 mkdir 暂时不知道有什么区别，所以实现一样！
-    fn mknod(&self, path: &str, mode: InodeMode, dev_id: Option<usize>) -> Arc<dyn Dentry> {
-        let inode = Arc::clone(&self.meta.inner.lock().d_inode);
-        let child_inode = FatInode::mknod(
-            inode, 
-            path, 
-            mode, 
-            Arc::clone(&self.fat_info),
-            dev_id,
-        );
-        Arc::new(FatDentry::new_from_inode(child_inode,Arc::clone(&self.fat_info), path))
-    }
-
     // Assumption: name是单个名字
     // function：此时flags == CREATE, 所以需要创建对应的文件
     // 这个函数是mkdir和mknod的结合，因为要处理关系，所以直接使用mkdir和mknod多有不便。
@@ -91,13 +64,13 @@ impl Dentry for FatDentry {
         if mode.eq(&InodeMode::Directory) {
             child_dentry = self.mkdir(
                 &cwd_and_name(name, &self.path()),
-                InodeMode::Directory);
+                InodeMode::Directory)?;
         } else if mode.eq(&InodeMode::Regular) {
             child_dentry = self.mknod(
                 &cwd_and_name(name, &self.path()),
                 InodeMode::Regular,
                 None,
-            );
+            )?;
         } else { // 其他的类型，暂时不支持！
             todo!();
         }
@@ -113,7 +86,7 @@ impl Dentry for FatDentry {
         let file_meta = FileMeta {
             f_mode: flags.clone().into(),
             page_cache: Some(Arc::new(PageCache::new())),
-            f_dentry: Arc::clone(&dentry),
+            f_dentry: Some(Arc::clone(&dentry)),
             f_inode: Arc::downgrade(&Arc::clone(&dentry.metadata().inner.lock().d_inode)),
             inner: SpinLock::new(FileMetaInner {
                 f_pos: 0,
@@ -130,7 +103,7 @@ impl Dentry for FatDentry {
         Ok(Arc::new(file))
     }
 
-    fn load_child(&self, this: Arc<dyn Dentry>) {
+    fn load_child(&self, this: Arc<dyn Dentry>) -> OSResult<()>{
         // 1. 找目录中所有的数据cluster
         let mut nxt_free_pos = NxtFreePos::empty();
         let dev = Arc::clone(self.fat_info.dev.as_ref().expect("Block device is None"));
@@ -181,30 +154,33 @@ impl Dentry for FatDentry {
             DENTRY_CACHE.lock().insert(path, Arc::clone(&child_rc));
             self.meta.inner.lock().d_child.insert(name, Arc::clone(&child_rc));
         }
+        Ok(())
     }
     
     // TODO: 不确定这种写法能不能正确的运行???? 如果不行,则要替换成每次只load一层.
-    fn load_all_child(&self, this: Arc<dyn Dentry>) {
+    fn load_all_child(&self, this: Arc<dyn Dentry>) -> OSResult<()>{
         let fa = this.clone();
         if fa.metadata()
             .inner
             .lock()
             .d_inode
             .metadata().i_mode != InodeMode::Directory {
-            return;
+            return Ok(());
         }
-        fa.load_child(fa.clone());
+        fa.load_child(fa.clone())?;
         for (_, child) in &fa.metadata().inner.lock().d_child {
-            child.load_all_child(Arc::clone(child));
+            child.load_all_child(Arc::clone(child))?;
         }
+        Ok(())
     }
 
     // 这个函数的功能暂时很简单，就是删除cache中的数据，同时删除关系和磁盘上的数据（其实不用删除？？）
-    fn unlink(&self, child: Arc<dyn Dentry>) {
+    fn unlink(&self, child: Arc<dyn Dentry>) -> OSResult<()> {
         let child_name = child.metadata().inner.lock().d_name.clone();
         DENTRY_CACHE.lock().remove(&child.metadata().inner.lock().d_path);
-        child.metadata().inner.lock().d_inode.delete_data();
+        child.metadata().inner.lock().d_inode.delete_data()?;
         self.meta.inner.lock().d_child.remove(&child_name);
+        Ok(())
     }
 }
 
@@ -257,6 +233,33 @@ impl FatDentry {
 
     pub fn path(&self) -> String {
         self.meta.inner.lock().d_path.clone()
+    }
+
+    // Assumption: path是合法的，format过的
+    // function: 创建子inode和子目录，同时将数据都写在了磁盘上。
+    // return: 子目录 Arc<dyn Dentry>
+    // 在openat函数和mkdir函数中均有使用
+    fn mkdir(&self, path: &str, mode: InodeMode) -> OSResult<Arc<dyn Dentry>> {
+        let inode = Arc::clone(&self.meta.inner.lock().d_inode);
+        let child_inode = FatInode::mkdir(
+            Arc::clone(&inode), 
+            path, 
+            mode, 
+            Arc::clone(&self.fat_info));
+        Ok(Arc::new(FatDentry::new_from_inode(child_inode,self.fat_info.clone(), path)))
+    }
+
+    // TODO: 这个函数和 mkdir 暂时不知道有什么区别，所以实现一样！
+    fn mknod(&self, path: &str, mode: InodeMode, dev_id: Option<usize>) -> OSResult<Arc<dyn Dentry>> {
+        let inode = Arc::clone(&self.meta.inner.lock().d_inode);
+        let child_inode = FatInode::mknod(
+            inode, 
+            path, 
+            mode, 
+            Arc::clone(&self.fat_info),
+            dev_id,
+        );
+        Ok(Arc::new(FatDentry::new_from_inode(child_inode,Arc::clone(&self.fat_info), path)))
     }
 }
 

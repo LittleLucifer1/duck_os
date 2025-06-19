@@ -1,7 +1,7 @@
 use core::{arch::global_asm, panic};
 
 use log::info;
-use riscv::register::{mtvec, scause::{self, Exception, Trap}, sstatus, stval, stvec};
+use riscv::register::{mtvec, scause::{self, Exception, Trap}, sepc, sstatus, stval, stvec};
 use crate::{process::hart::cpu::get_cpu_id, syscall::syscall};
 use self::context::TrapContext;
 use super::hart::cpu::get_cpu_local;
@@ -78,21 +78,21 @@ pub fn kernel_trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
             cx.sepc += 4;
-                       
         }
         _ => {
-            // info!(
-            //     "[kernel] {:?}(scause:{}) in application, bad addr = {:#x}, bad instruction = {:#x}, kernel panicked!!",
-            //     scause::read().cause(),
-            //     scause::read().bits(),
-            //     stval::read(),
-            //     sepc::read(),
-            // );
-            // panic!(
-            //     "a trap {:?} from kernel! stval {:#x}",
-            //     scause::read().cause(),
-            //     stval::read()
-            // );
+            info!(
+                "[kernel] {:?}(scause:{}) in application, bad addr = {:#x}, bad instruction = {:#x}, kernel panicked!!",
+                scause::read().cause(),
+                scause::read().bits(),
+                stval::read(),
+                sepc::read(),
+            );
+            loop {}
+            panic!(
+                "a trap {:?} from kernel! stval {:#x}",
+                scause::read().cause(),
+                stval::read()
+            );
         }
     }
     cx

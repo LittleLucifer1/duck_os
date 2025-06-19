@@ -31,12 +31,13 @@ use core::ops::Range;
 use crate::{config::mm::PAGE_SIZE, utils::cell::SyncUnsafeCell};
 
 use alloc::sync::Arc;
+use log::info;
 use riscv::register::scause::Scause;
 
 use crate::config::mm::PHY_TO_VIRT_PPN_OFFSET;
 
 use super::{
-    address::{align_down, align_up, byte_array, ppn_to_phys, virt_to_vpn, VirtAddr}, 
+    address::{align_down, align_up, virt_to_vpn, VirtAddr}, 
     memory_set::page_fault::PageFaultHandler, 
     page_table::PageTable, 
     pma::{Page,  PhysMemoryAddr}, 
@@ -53,6 +54,7 @@ pub enum VmaType {
     UserHeap,
     PhysFrame,
     Mmio,
+    Interp,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -62,7 +64,7 @@ pub enum MapType {
 }
 
 /*  TODO: 这里的数据类型是否要加锁等之类的问题还要仔细考虑
-   Direct类型vma：没有page_fault_handler, 没有pma(页帧)
+    Direct类型vma：没有page_fault_handler, 没有pma(页帧)
     Assumption: vaddr的范围头尾值都 页对齐了
 */ 
 pub struct VirtMemoryAddr {
@@ -128,12 +130,15 @@ impl VirtMemoryAddr {
     // 分配物理帧、映射
     // Direct：不用分配物理帧，pma保持为空
     // Frame: 分配物理帧
-    // function: 完成page table映射，并修改pma中的page
+    // function: 完成page table映射，并将page插入pma中
+    // TODO： 每次只处理一页？？？？
     pub fn map_one(&self, pt: &mut PageTable, vpn: usize, page: Option<Arc<Page>>) -> usize {
         let pma = self.pma.get_unchecked_mut();
         let ppn: usize;
         match self.map_type {
             MapType::Direct => {
+                // 有逻辑问题，万一vpn不在高地址？但是只有高地址的内核地址才会直接映射
+                assert!(vpn >= PHY_TO_VIRT_PPN_OFFSET);
                 ppn = vpn - PHY_TO_VIRT_PPN_OFFSET;
             },
             MapType::Framed => {
@@ -152,7 +157,9 @@ impl VirtMemoryAddr {
     }
 
     // 暂时可能没有内核的分配，所以这里只是`MapType::Framed`的类型
-    pub fn map_one_lazily(&self, pt: &mut PageTable, vpn: usize) {
+    // function：完成映射（映射到物理地址为0处）+ 不插入pma中
+    fn map_one_lazily(&self, pt: &mut PageTable, vpn: usize) {
+        assert!(self.map_type == MapType::Framed);
         pt.map_one(vpn, 0, PTEFlags::empty());
     }
     /// 解映射
@@ -163,14 +170,15 @@ impl VirtMemoryAddr {
         pt.unmap(vpn);
     }
 
-    pub fn map_all_lazy(&self, pt: &mut PageTable) {
+    pub fn map_self_all_lazy(&self, pt: &mut PageTable) {
         for vpn in self.vma_range() {
             self.map_one_lazily(pt, vpn);
         }
     }
 
     // 默认：vma是空壳，物理帧为None
-    pub fn map_all(&self, pt:&mut PageTable) {
+    // TODO: 这个函数有一个默认的条件？？？
+    pub fn map_self_all(&self, pt:&mut PageTable) {
         for vpn in self.vma_range() {
             self.map_one(pt, vpn, None);
         }
@@ -178,7 +186,13 @@ impl VirtMemoryAddr {
 
     pub fn handle_page_fault(&self, vaddr: VirtAddr, pt: &mut PageTable, scause: Scause) {
         self.page_fault_handler.as_ref().map(|handler| {
-            handler.handler_page_fault(self, vaddr, None, scause, pt)
+            handler.handler_page_fault(
+                self.pma.get_unchecked_mut(),
+                vaddr,
+                self.start_vaddr, 
+                self.map_permission,
+                None, scause, pt
+            )
         });
     }
 
@@ -187,27 +201,22 @@ impl VirtMemoryAddr {
         let end_vpn = virt_to_vpn(self.end_vaddr);
         start_vpn..end_vpn
     }
-
-    // Function: 向物理页帧中写入数据
-    // TODO: 这里可以直接找物理地址空间中的页，而不是去找页表！
-    // offset: 页表中的某个位置
-    pub fn copy_data(&self, data: &[u8], offset: usize, pt: &mut PageTable) {
+    
+    // Function: 向物理页中写入数据，写入的长度为data_len，写入页中的开始位置为offset
+    // offset: 最开始写入的地址对应页中的offset位置
+    // data：长度不受限制，所以可以写入很多页
+    // start_va: 最开始写入地址的虚拟地址
+    pub fn write_data_to_page(&self, start_va: usize, data: &[u8], offset: usize) {
         let mut start = 0usize;
         let mut offset = offset;
-        let mut current_va = self.start_vaddr;
+        // let mut current_va = self.start_vaddr;
+        let mut current_va = start_va;
         let max_len = data.len();
         loop {
             let end = max_len.min(start + PAGE_SIZE - offset);
-            let src = &data[start..end];
-            assert!(offset + src.len() <= PAGE_SIZE);
-            let dst = &mut byte_array(
-                ppn_to_phys(pt
-                    .find_pte(current_va)
-                    .unwrap()
-                    .ppn())
-            )[offset..offset + src.len()];
-            dst.fill(0);
-            dst.copy_from_slice(src);
+            let vpn = virt_to_vpn(current_va);
+            self.pma.get_unchecked_mut()
+                .write_data_to_page(vpn, &data[start..end], offset);
             start += PAGE_SIZE - offset;
             if start >= max_len {
                 break;
@@ -216,6 +225,31 @@ impl VirtMemoryAddr {
             current_va += PAGE_SIZE;
         }
     }
+
+    // Function: 向物理页中读出数据，写入的长度为data_len，写入页中的开始位置为offset
+    // offset: 最开始读出的地址对应页中的offset位置
+    // data：长度不受限制，所以可以读出很多页
+    // start_va: 最开始读出地址的虚拟地址
+    pub fn read_data_from_page(&self, start_va: usize, data: &mut [u8], offset: usize) {
+        let mut start = 0usize;
+        let mut offset = offset;
+        // let mut current_va = self.start_vaddr;
+        let mut current_va = start_va;
+        let max_len = data.len();
+        loop {
+            let end = max_len.min(start + PAGE_SIZE - offset);
+            let vpn = virt_to_vpn(current_va);
+            self.pma.get_unchecked_mut()
+                .read_data_from_page(vpn, &mut data[start..end], offset);
+            start += PAGE_SIZE - offset;
+            if start >= max_len {
+                break;
+            }
+            offset = 0;
+            current_va += PAGE_SIZE;
+        }
+    }
+
 
     pub fn is_backen_file(&self) -> bool {
         self.pma.get_unchecked_mut().backen_file.is_some()
@@ -231,8 +265,8 @@ impl VirtMemoryAddr {
     // Titanix中，貌似这里只修改了map_permission，其他的一律没有修改。
     pub fn modify(&mut self, new_flags: MapPermission, pt: &mut PageTable) {
         // 修改了区间的
-         let new_pte_flags = PTEFlags::from(new_flags);
-         self.map_permission = new_flags;
+        let new_pte_flags = PTEFlags::from(new_flags);
+        self.map_permission = new_flags;
         // 修改page_table中的
         let page_manager = &mut self.pma.get_unchecked_mut().page_manager;
         for (&vpn, _page) in  page_manager {

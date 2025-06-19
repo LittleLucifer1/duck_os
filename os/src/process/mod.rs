@@ -1,4 +1,5 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
+use log::{debug, info};
 
 use crate::{fs::dentry::path_to_dentry, process::{hart::cpu::init_cpu_locals, schedule::init_schedule}, utils::path::parent_path};
 
@@ -26,7 +27,7 @@ pub static mut ORIGIN_TASK: Option<Arc<PCB>> = None;
 pub fn init_origin_task() {
     // 1. 先拿到elf的data数据
     let path = "/brk";
-    let dentry = path_to_dentry(path);
+    let dentry = path_to_dentry(path).expect("[process mod.rs] Unimplemented");
     if dentry.is_none() {
         panic!("No file:{} in file system.", path);
     }
@@ -39,22 +40,29 @@ pub fn init_origin_task() {
     
     unsafe {
         // 5.10 修改了path这里传输的值
-        ORIGIN_TASK = Some(Arc::new(PCB::elf_data_to_pcb(&parent_path(path), &data)));
+        ORIGIN_TASK = Some(Arc::new(PCB::elf_data_to_pcb(
+            &parent_path(path), 
+            &data.expect("[process.rs]Read all data fail"))
+        ));
     }
     // println!("Origin task initialization finished!");
     init_schedule();
 }
 
 pub fn init_task_and_push(elf_name: &str) {
+    info!("[init_task_and_push] elf_name: {}", elf_name);
     let mut path = String::from("/");
     path.push_str(elf_name);
-    let dentry = path_to_dentry(&path);
+    let dentry = path_to_dentry(&path).expect("[process mod.rs] Unimplemented");
     if dentry.is_none() {
         panic!("No file:{} in file system.", path);
     }
     let inode = Arc::clone(&dentry.as_ref().unwrap().metadata().inner.lock().d_inode);
     let data = inode.read_all();
-    let pcb = Arc::new(PCB::elf_data_to_pcb(&parent_path(&path), &data));
+    let pcb = Arc::new(PCB::elf_data_to_pcb(
+        &parent_path(&path), 
+        &data.expect("[process.rs] Read all data wrong")
+    ));
     SCHEDULE.lock().task_queue.push_back(Arc::clone(&pcb));
 }
 

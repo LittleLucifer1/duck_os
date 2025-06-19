@@ -1,13 +1,14 @@
 //! 任务上下文, 用于任务切换
 
 #[derive(Clone, Copy)]
+// 控制结构体的内存布局方式，字段顺序不变，内存对齐
 #[repr(C)]
 pub struct TaskContext {
     // 在switch之后，应该返回的位置
     ra: usize,
     // 栈指针
     sp: usize,
-    // 在switch的时候，需要保存的寄存器（caller saved）
+    // 在switch的时候，需要保存的寄存器（callee saved）
     s: [usize; 12],
 }
 

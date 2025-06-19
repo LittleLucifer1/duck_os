@@ -22,13 +22,12 @@ _start:
     # the offset is 0xffff_ffff_0000_0000
     li t1, 0xffffffff00000000
     add sp, sp, t1
-    # 4.jump to rust_main
+    # 4.jump to rust_main 此时的rust_main还是物理地址
     la t0, rust_main
     add t0, t0, t1
     jr t0
 
     .section .bss.stack
-
     .globl boot_stack_lower
 boot_stack_lower:
 # 内核栈总大小：最多8个核，每个核有15页，再加上一个guard page, 总共16页——64kb

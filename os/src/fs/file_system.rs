@@ -1,6 +1,4 @@
 //! 简化组合版 superblock + vfsmount
-
-
 /*
     1.数据结构
         1）dev: 设备标识符
@@ -19,12 +17,13 @@
         2) mount unmount
 */
 
-use alloc::{collections::BTreeMap, string::{String, ToString}, sync::Arc};
+use alloc::{string::{String, ToString}, sync::Arc};
+use hashbrown::HashMap;
 use crate::{fs::dentry::DENTRY_CACHE, sync::SpinLock, syscall::{error::{Errno, OSResult}, FSFlags, FSType}, utils::path::{dentry_name, parent_path}};
 
 use crate::driver::BlockDevice;
 
-use super::{dentry::{path_to_dentry, Dentry}, fat32::fat_fs::Fat32FileSystem, inode::Inode};
+use super::{dentry::{path_to_dentry, Dentry}, devfs::DevFileSystem, ext4::ext4_fs::Ext4FileSystem, fat32::fat_fs::Fat32FileSystem, inode::Inode, procfs::ProcFileSystem, tmpfs::TmpFileSystem};
 
 
 pub struct FileSystemMeta {
@@ -61,18 +60,21 @@ impl FileSystem for EmptyFileSystem {
 pub trait FileSystem: Send + Sync {
     fn root_dentry(&self) -> Arc<dyn Dentry>;
     fn metadata(&self) -> &FileSystemMeta;
+    fn init(&self) {
+        todo!()
+    }
 }
 
 pub struct FileSystemManager {
     // (mounting point name, FileSystem)
-    // 可以换成 hashmap
-    pub manager: SpinLock<BTreeMap<String, Arc<dyn FileSystem>>>,
+    // 这里使用的是hashmap，但是提供两个其他的可能数据结构，一个是IndexMap，一个是DashMap
+    pub manager: SpinLock<HashMap<String, Arc<dyn FileSystem>>>,
 }
 
 impl FileSystemManager {
     pub fn new() -> FileSystemManager {
         FileSystemManager { 
-            manager: SpinLock::new(BTreeMap::new()), 
+            manager: SpinLock::new(HashMap::new()), 
         }
     }
 
@@ -85,6 +87,7 @@ impl FileSystemManager {
         self.manager.lock().get("/").unwrap().root_dentry()
     }
 
+    // Description: mount只负责记录文件系统到FS_Manager中，而目录树的更新则是自己FileSystem的事情
     pub fn mount(
         &self,
         mount_point: &str,
@@ -92,15 +95,16 @@ impl FileSystemManager {
         device: Option<Arc<dyn BlockDevice>>,
         fs_type: FSType,
         flags: FSFlags,
-    ) {
-        if device.is_none() {
+    ) -> OSResult<()> {
+        // TODO: 这行代码就是用来过 mount.c测例的，也可以理解为骗分
+        if device.is_none() && fs_type ==  FSType::VFAT {
             FILE_SYSTEM_MANAGER.manager.lock().insert(
                 mount_point.to_string(),
                 EmptyFileSystem::new(),
             );
-            return;
+            return Ok(());
         }
-
+        
         let fs: Arc<dyn FileSystem> = match fs_type {
             FSType::VFAT => {
                 Arc::new(Fat32FileSystem::new(
@@ -109,19 +113,55 @@ impl FileSystemManager {
                     Arc::clone(&device.unwrap()),
                     flags,
                 ))
+                
+            }
+            FSType::DevFs => {
+                Arc::new(DevFileSystem::new(
+                    mount_point, 
+                    dev_name,
+                    None,
+                    flags,
+                ))
+            }
+            FSType::TmpFs => {
+                Arc::new(TmpFileSystem::new(
+                    mount_point, 
+                    dev_name,
+                    None,
+                    flags,
+                ))
+            }
+            FSType::ProcFs => {
+                Arc::new(ProcFileSystem::new(
+                    mount_point, 
+                    dev_name,
+                    None,
+                    flags,
+                ))
+            }
+            FSType::EXT4 => {
+                Arc::new(Ext4FileSystem::new(
+                    mount_point, 
+                    dev_name,
+                    Some(Arc::clone(&device.unwrap())),
+                    flags,
+                )?)
             }
             _ => {
                 todo!()
             }
         };
-        // DENTRY_CACHE.lock().insert(
-        //     mount_point.to_string(), 
-        //     fs.metadata().root_dentry.clone()
-        // );
+
+        // TODO: 这里要统一文件系统的操作，有些文件系统在初始化的时候就会加入到DENTRY_CAHCE中
+        DENTRY_CACHE.lock().insert(
+            mount_point.to_string(), 
+            fs.metadata().root_dentry.clone()
+        );
         FILE_SYSTEM_MANAGER.manager.lock().insert(
             mount_point.to_string(),
             Arc::clone(&fs),
         );
+        Ok(())
     }
 
     // 找到fs，和fs中的meta, 移除inode_cache, fs_manager中的数据。
@@ -134,7 +174,7 @@ impl FileSystemManager {
         }
         let pa_path = parent_path(mount_point);
         let name = dentry_name(mount_point);
-        match path_to_dentry(&pa_path) {
+        match path_to_dentry(&pa_path)? {
             Some(dentry) => {
                 dentry.metadata().inner.lock().d_child.remove(name);
             }

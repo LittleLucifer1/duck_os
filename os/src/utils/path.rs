@@ -15,11 +15,9 @@ use super::string::c_ptr_to_string;
 
 // 得到路径上最后一个name
 pub fn dentry_name(path: &str) -> &str {
-    if path == "" {
-        return "";
-    }
-    let names: Vec<&str> = path.split('/').filter(|name| *name != "").collect();
-    names[names.len() - 1]
+    path.rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
 }
 
 // Assumption: path 只为 / 开头的路径 或者 ../ ./ 开头的合法路径
@@ -119,7 +117,7 @@ fn dirfd_to_path(dirfd: isize) -> OSResult<String> {
     
     let fds_lock = fds.lock();
     let fd_info = fds_lock.fd_table.get(&(dirfd as usize)).ok_or(Errno::EBADF)?;
-    let path = fd_info.file.metadata().f_dentry.metadata().inner.lock().d_path.clone();
+    let path = fd_info.file.metadata().f_dentry.as_ref().unwrap().metadata().inner.lock().d_path.clone();
     Ok(path)
 }
 
@@ -150,10 +148,10 @@ pub fn dirfd_and_path(dirfd: isize, path: &str) -> OSResult<String> {
     }
 }
 
-// // Assumption: 暂时用在execve, openat中，dirfd默认是AT_FDCWD
-// // 如果path为相对地址，则dirfd是目前的进程地址
-// // 如果path为绝对地址，则dirfd没有用
-// // path为NULL，或者地址不存在都会报错
+// Assumption: 暂时用在execve, openat中，dirfd默认是AT_FDCWD
+// 如果path为相对地址，则dirfd是目前的进程地址
+// 如果path为绝对地址，则dirfd没有用
+// TODO: 重构 path为NULL，或者地址不存在都会报错
 pub fn ptr_and_dirfd_to_path(dirfd: isize, ptr: *const u8) -> OSResult<String> {
     match ptr as usize {
         0 => {

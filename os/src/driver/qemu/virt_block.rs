@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use alloc::vec::Vec;
 use virtio_drivers::{device::blk::VirtIOBlk, transport::mmio::{MmioTransport, VirtIOHeader}, Hal};
 
-use crate::{config::mm::VIRTIO0, driver::BlockDevice, mm::{address::{phys_to_ppn, phys_to_virt, ppn_to_phys}, allocator::frame::{alloc_contiguous_frame, dealloc_frame, FrameTracker}, memory_set::mem_set::KERNEL_SPACE}, sync::SpinNoIrqLock};
+use crate::{config::{fs::SECTOR_SIZE, mm::VIRTIO0}, driver::BlockDevice, mm::{address::{phys_to_ppn, phys_to_virt, ppn_to_phys}, allocator::frame::{alloc_contiguous_frame, dealloc_frame, FrameTracker}, memory_set::mem_set::KERNEL_SPACE}, sync::SpinNoIrqLock};
 
 pub struct VirtIOBlock(SpinNoIrqLock<VirtIOBlk<VirtioHal, MmioTransport>>);
 
@@ -26,6 +26,10 @@ impl BlockDevice for VirtIOBlock {
             Ok(_) => (),
             Err(_) => panic!("[Kernle](VirtIoBlock): Write error in block_id:{}", block_id)
         }
+    }
+
+    fn size(&self) -> u64 {
+        self.0.lock().capacity() * (SECTOR_SIZE as u64)
     }
 }
 
@@ -87,7 +91,7 @@ unsafe impl Hal for VirtioHal {
         buffer: core::ptr::NonNull<[u8]>, 
         _direction: virtio_drivers::BufferDirection
     ) -> virtio_drivers::PhysAddr {
-       unsafe {
+        unsafe {
         let pa = 
         KERNEL_SPACE.as_ref().expect("Not initial")
             .pt
@@ -96,7 +100,7 @@ unsafe impl Hal for VirtioHal {
                 buffer.as_ptr() as *const usize as usize
             ).unwrap();
         pa
-       }
+        }
     }
 
     unsafe fn unshare(

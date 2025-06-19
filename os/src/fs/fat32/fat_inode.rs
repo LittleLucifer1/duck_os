@@ -8,8 +8,7 @@ use crate::{
     fs::{
         info::{InodeMode, TimeSpec}, 
         inode::{BlockDevWrapper, Inode, InodeDev, InodeMeta}
-    },
-    sync::SpinLock, utils::path::dentry_name
+    }, sync::SpinLock, syscall::error::OSResult, utils::path::dentry_name
 };
 
 use super::{data::{DirAttr, ShortDirEntry}, fat::FatInfo, fat_dentry::Position, fat_file::FatDiskFile};
@@ -34,20 +33,22 @@ impl Inode for FatInode {
     }
 
     // 调用底层的函数，删除磁盘上的数据
-    fn delete_data(&self) {
-        
+    fn delete_data(&self) -> OSResult<()>{
+        todo!()
     }
 
-    fn read(&self, offset: usize, buf: &mut [u8]) {
+    fn read(&self, offset: usize, buf: &mut [u8]) -> OSResult<usize> {
         self.fat_file.lock().read(buf, offset);
+        Ok(0)
     }
     
-    fn write(&self, offset: usize, buf: &mut [u8]) {
+    fn write(&self, offset: usize, buf: &mut [u8]) -> OSResult<usize> {
         self.fat_file.lock().write(buf, offset, self.pos);
+        Ok(0)
     }
 
-    fn read_all(&self) -> Vec<u8> {
-        self.fat_file.lock().read_all()
+    fn read_all(&self) -> OSResult<Vec<u8>> {
+        Ok(self.fat_file.lock().read_all())
     }
 }
 

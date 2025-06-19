@@ -1,34 +1,36 @@
-//！ 加载模块 —— 目前只实现静态加载
+//！ 加载模块 —— 静态 + 动态加载器模块，参考 2023年作品 Titanix 
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use core::str::from_utf8;
+
+use alloc::{string::{String, ToString}, sync::Arc, vec::Vec, vec};
 use log::info;
+use virtio_drivers::PAGE_SIZE;
 
 use crate::{
-    config::mm::{USER_STACK_TOP, USER_STACK_SIZE}, 
-    mm::{
+    config::mm::{DL_INTERP_OFFSET, USER_STACK_SIZE, USER_STACK_TOP}, fs::{dentry::path_to_dentry, file::File, info::OpenFlags, page_cache::PageCache}, mm::{
         address::{align_up, vaddr_offset}, 
         memory_set::{mem_set::MemorySet, page_fault::{UHeapPageFaultHandler, UStackPageFaultHandler}}, 
         type_cast::MapPermission, 
         vma::{MapType, VirtMemoryAddr, VmaType}
-    }
+    }, syscall::error::OSResult
 };
 use self::stack::{StackInfo, StackLayout};
 
-pub mod dynamic;
 pub mod stack;
 
 pub fn check_magic(elf: &xmas_elf::ElfFile) -> bool {
     let mut ans: bool = true;
     let magic_num:[u8; 4] = [0x7f, 0x45, 0x4c, 0x46];
     for i in 0..magic_num.len() {
-       if magic_num[i] != elf.header.pt1.magic[i] {
+        if magic_num[i] != elf.header.pt1.magic[i] {
             ans = false;
-       }
+        }
     }
     ans
 }
 
-// 返回值：(entry_point, ustack_sp, StackLayout)
+// Function: 映射不同段、映射进程的 user_stack、heap、处理栈中的auxv、argc、argv
+// Return：(entry_point, ustack_sp, StackLayout)
 pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<String>) -> (usize, usize, Option<StackLayout>) {
     let elf = xmas_elf::ElfFile::new(&data).unwrap();
     // 检查魔数
@@ -36,41 +38,10 @@ pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<St
         panic!("ELF magic wrong");
     }
     // 开始映射
-    let ph_count = elf.header.pt2.ph_count();
-    // TODO：当这个为动态链接时，会被修改
     let mut entry_point = elf.header.pt2.entry_point() as usize;
-    let mut heap_start: usize = 0;
-    for i in 0..ph_count {
-        let ph = elf.program_header(i).unwrap();
-        if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
-            let start_va = ph.virtual_addr() as usize;
-            let end_va = start_va + ph.mem_size() as usize;
-            let mut map_permission = MapPermission::U;
-            let ph_flags = ph.flags();
-            if ph_flags.is_read() {
-                map_permission |= MapPermission::R;
-            }
-            if ph_flags.is_write() {
-                map_permission |= MapPermission::W;
-            }
-            if ph_flags.is_execute() {
-                map_permission |= MapPermission::X;
-            }
-            // TODO：优化的地方：首先可以对elf的内容进行lazy复制
-            // 其次如果elf的内容已经在内存中，且是不可写，则可以共享page
-            vm.push(VirtMemoryAddr::new(
-                start_va,
-                end_va, 
-                map_permission, 
-                MapType::Framed,
-                VmaType::Elf,
-                None,),
-                Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
-                vaddr_offset(start_va)
-            );
-            heap_start = heap_start.max(align_up(end_va));
-        }
-    }
+    let dl_value = load_dl_interp(&elf, vm);
+    let heap_start: usize = map_elf_at(&elf, None, vm, 0).expect("[loader mod.rs] Wrong");
+    
     // 映射用户栈
     let user_stack_top = USER_STACK_TOP;
     let user_stack_bottom = user_stack_top - USER_STACK_SIZE;
@@ -86,6 +57,7 @@ pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<St
         None,
         0
     );
+    info!("The ustack start is 0x{:x}, ustack end is 0x{:X}", user_stack_bottom, user_stack_top);
     // TODO: 这里的堆到底有没有成功映射 DONE：有，只不过没有任何的映射数据罢了。
     let heap_end = heap_start;
     vm.push(VirtMemoryAddr::new(
@@ -101,18 +73,125 @@ pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<St
     );
     vm.heap_end = heap_end;
     info!("The heap start is 0x{:x}, heap end is 0x{:X}", heap_start, heap_end);
-    let mut stack_layout: Option<StackLayout> = None;
-    // 需要构建user stack中的内容
-    if !args.is_empty() || !envs.is_empty() {
-        // 传递auxv的相关值
-        let mut stack_info = StackInfo::empty();
-        stack_info.init_arg(args, envs);
-        stack_info.init_auxv(&elf);
-
-        let (_sp, layout) = stack_info.build_stack(user_stack_top);
-        stack_layout = Some(layout);
+    
+    // 需要构建user stack中的内容，无论什么情况，都需要构建argc,argv,auxv的结构
+    let mut stack_info = StackInfo::empty();
+    stack_info.init_arg(args, envs);
+    stack_info.init_auxv(&elf);
+    if let Some((entry, base)) = dl_value {
+        stack_info.set_auxv_at_base(base);
+        entry_point = entry;
+    } else {
+        stack_info.set_auxv_at_base(0);
     }
+    // let (_sp, layout) = stack_info.build_stack(user_stack_top);
+    
+    // let stack_layout: Option<StackLayout> = Some(layout);
+    let stack_layout: Option<StackLayout> = Some(StackLayout::empty());
     info!("The entry_point is {:x}, user_stack_top is {:x}, user_stack_bottom is {:x}", entry_point, user_stack_top, user_stack_bottom);
     (entry_point, user_stack_top, stack_layout)
     
+}
+
+// Function: 根据elf决定映射相关的段，返回映射所有段中段最高的位置
+// 如果文件中有 Page_cache，说明这个文件数据被加载到了内存中，不需要再分配page了
+fn map_elf_at(elf: &xmas_elf::ElfFile, file: Option<Arc<dyn File>>, vm: &mut MemorySet, base_addr: usize) -> OSResult<usize> {
+    let mut max_end = 0usize;
+    
+    for ph in elf.program_iter() {
+        if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
+            let start_va = ph.virtual_addr() as usize + base_addr;
+            let end_va = start_va + ph.mem_size() as usize;
+            let mut map_permission = MapPermission::U;
+            let ph_flags = ph.flags();
+            if ph_flags.is_read() {
+                map_permission |= MapPermission::R;
+            }
+            if ph_flags.is_write() {
+                map_permission |= MapPermission::W;
+            }
+            if ph_flags.is_execute() {
+                map_permission |= MapPermission::X;
+            }
+
+            let mut page_cache: Option<Arc<PageCache>> = None;
+            if let Some(file) = file.as_ref() {
+                page_cache = Some(file.metadata().page_cache.as_ref().unwrap().clone());
+            }
+
+            if !map_permission.contains(MapPermission::W) && page_cache.is_some() {
+                let mut file_offset = ph.offset() as usize;
+                let page_cache = page_cache.unwrap();
+                let vma = VirtMemoryAddr::new(
+                    start_va,
+                    end_va, 
+                    map_permission, 
+                    MapType::Framed,
+                    VmaType::Elf,
+                    None);
+                for vpn in vma.vma_range() {
+                    let page = page_cache.find_page(file_offset);
+                    vma.map_one(&mut vm.pt.get_unchecked_mut(), vpn, page);
+                    file_offset += PAGE_SIZE;
+                }
+                vm.push_no_map(vma);
+            } else {
+                vm.push(VirtMemoryAddr::new(
+                    start_va,
+                    end_va, 
+                    map_permission, 
+                    MapType::Framed,
+                    VmaType::Elf,
+                    None,),
+                    Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                    vaddr_offset(start_va)
+                );
+            }
+            max_end = max_end.max(align_up(end_va));
+        }
+    }
+    Ok(max_end)
+}
+
+fn load_dl_interp(elf: &xmas_elf::ElfFile, vm: &mut MemorySet) -> Option<(usize, usize)> {
+    let mut interp_path: Option<String> = None;
+
+    for ph in elf.program_iter() {
+        if let Ok(xmas_elf::program::Type::Interp) = ph.get_type() {
+            let offset = ph.offset() as usize;
+            let size = ph.file_size() as usize;
+            let raw = &elf.input[offset..offset + size];
+            let path = from_utf8(raw).unwrap().trim_end_matches('\0').to_string();
+            interp_path = Some(path);
+            break;
+        }
+    }
+
+    let interp_path = interp_path?;
+
+    let mut candidates = vec![interp_path.clone()];
+    if interp_path == "/lib/ld-musl-riscv64.so.1" || interp_path == "/lib/ld-musl-riscv64-sf.so.1" {
+        candidates.push("/libc.so".to_string());
+        candidates.push("/lib/libc.so".to_string());
+    }
+
+    let mut file: Option<Arc<dyn File>> = None;
+    for path in candidates {
+        if let Some(dentry) = path_to_dentry(&path).expect("[loader mod.rs] Unimplemented") {
+            file = dentry.open(dentry.clone(), OpenFlags::O_RDONLY).ok();
+            break;
+        }
+    }
+
+    let file = file?;
+    let mut data = Vec::new();
+    file.read_all(&mut data, OpenFlags::O_RDONLY).ok()?;
+
+    let interp_elf = xmas_elf::ElfFile::new(&data).ok()?;
+
+    // 将动态链接器加载到固定基址
+    let interp_base = DL_INTERP_OFFSET;
+    map_elf_at(&interp_elf, Some(file), vm, interp_base).ok()?;
+
+    Some((interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET, interp_base))
 }

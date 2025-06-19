@@ -120,6 +120,7 @@ pub fn pte_array(paddr: PhysAddr) -> &'static mut [PageTableEntry] {
 }
 
 /// 从物理地址 解引用获得byte array
+// Unsafe: 这里应该保证paddr是页首地址，否则会跨页！
 pub fn byte_array(paddr: PhysAddr) -> &'static mut [u8] {
     assert!(PADDR_LOW <= paddr && paddr <= PADDR_HIGH);
     unsafe {

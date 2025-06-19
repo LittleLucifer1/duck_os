@@ -224,7 +224,7 @@ pub fn sys_execve(
             7. 关闭fd_table
             8. 将相关的参数放入用户栈上！
     */
-    info!("[sys_execve]: path: 0x{:x}, args: 0x{:x}, envs: {:x}", path, args, envs);
+    info!("[sys_execve]: path: 0x{:x}, args: 0x{:x}, envs: 0x{:x}", path, args, envs);
     let _sum = SumGuard::new();
 
     let path_ptr = path as *const u8;
@@ -238,7 +238,7 @@ pub fn sys_execve(
     if path.ends_with(".sh") {
         todo!()
     }
-    let dentry = path_to_dentry(&path).ok_or(Errno::ENOENT)?;
+    let dentry = path_to_dentry(&path)?.ok_or(Errno::ENOENT)?;
     let dentry_lock = dentry.metadata().inner.lock();
     if dentry_lock.d_inode.metadata().i_mode != InodeMode::Regular {
         return Err(Errno::EACCES);
@@ -262,7 +262,7 @@ pub fn sys_execve(
         }   
     }
     let current_task = get_cpu_local(get_cpu_id()).current_pcb_clone().unwrap();
-    current_task.from_exec(&data, args_vec, envs_vec);
+    current_task.from_exec(&data.expect("[process.rs] Read all data wrong"), args_vec, envs_vec);
     Ok(0)
 }
 

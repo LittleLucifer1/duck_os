@@ -11,6 +11,11 @@ pub mod qemu;
 pub trait BlockDevice: Send + Sync {
     fn read_block(&self, block_id: usize, buf: &mut [u8]);
     fn write_block(&self, block_id: usize, buf: &[u8]);
+    // TODO: 不太理解这个东西是什么?
+    // DOWN：需要返回具体的大小，花了半天找这个错误
+    fn size(&self) -> u64 {
+        todo!()
+    }
 }
 
 pub trait CharDevice: Send + Sync {

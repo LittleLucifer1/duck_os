@@ -10,7 +10,7 @@ pub struct PCB {
     // 进程相关
     pub tgid: usize, // 组标识符，外部可见的pid
     pub pid: Pid, // 唯一标识符，内部可见的pid
-    pub kernel_stack: Kstack,
+    pub kernel_stack: Kstack, // 用户内核栈，放在这里是拿住所有权，本来可以没有这个成员
     pub vm: Arc<SpinLock<MemorySet>>,
     pub fd_table: Arc<SpinLock<FdTable>>,
     pub inner: Arc<SpinLock<PCBInner>>,

@@ -1,8 +1,8 @@
 use alloc::sync::{Arc, Weak};
 
-use crate::{config::fs::MAX_PIPE_BUFFER, process::hart::{cpu::suspend_current_task, env::SumGuard}, sync::SpinLock, syscall::error::{Errno, OSResult}};
+use crate::{config::fs::{MAX_PIPE_BUFFER, PIPE_BUF_LEN}, process::hart::{cpu::suspend_current_task, env::SumGuard}, sync::SpinLock, syscall::error::{Errno, OSResult}};
 
-use super::{file::{File, FileMeta}, info::OpenFlags};
+use super::{file::{File, FileMeta, FileMetaInner}, info::{FileMode, InodeMode, OpenFlags, TimeSpec}, inode::{Inode, InodeDev, InodeMeta}, simplefs::simple_inode::SimpleInode};
 
 #[derive(PartialEq, Debug)]
 pub enum PipeStatus {
@@ -13,7 +13,7 @@ pub enum PipeStatus {
 pub struct Pipe {
     pub status: PipeStatus,
     pub pipe_buffer: Arc<SpinLock<PipeRingBuffer>>,
-    // meta: FileMeta,
+    meta: FileMeta,
 }
 
 impl Pipe {
@@ -22,19 +22,28 @@ impl Pipe {
         // TODO: 这里居然使用contain会有不符合语义的东西！！！
         // if flags.contain(OpenFlags::O_RDONLY)
         if flags == OpenFlags::O_RDONLY {
-            // println!("The flag is {:#?}", flags);
-            // println!("reach here1");
             status = PipeStatus::Readable;
         } else if flags == OpenFlags::O_WRONLY {
-            // println!("The flag is {:#?}", flags);
-            // println!("reach here2");
             status = PipeStatus::Writable;
         } else {
             return None;
         }
+        let mut inode = SimpleInode::new(InodeMode::FIFO);
+        inode.set_size(PIPE_BUF_LEN);
+        let inode_arc: Arc<dyn Inode> = Arc::new(inode);
         Some(Self {
             status,
             pipe_buffer: Arc::clone(&pipe_buffer),
+            meta: FileMeta { 
+                f_mode: FileMode::all(), 
+                page_cache: None, 
+                f_dentry: None, 
+                f_inode: Arc::downgrade(&inode_arc), 
+                inner: SpinLock::new(FileMetaInner { 
+                    f_pos: 0, 
+                    dirent_index: 0 
+                }) 
+            }
         })
     }
 }
@@ -50,7 +59,7 @@ pub fn make_pipes() -> OSResult<(Arc<Pipe>, Arc<Pipe>)> {
 
 impl File for Pipe {
     fn metadata(&self) -> &FileMeta {
-        todo!()
+        &self.meta
     }
 
     // 如果管道中没有足够的字符，并且写端被关闭了，则返回；否则等待；
@@ -88,13 +97,13 @@ impl File for Pipe {
         assert!(self.status == PipeStatus::Writable);
         let buf_len = buf.len();
         let mut buf_off = 0usize;
-        let mut alread_write = 0usize;
+        let mut already_written = 0usize;
         loop {
             let mut buf_lock = self.pipe_buffer.lock();
             let free_write = buf_lock.available_write();
             if free_write == 0 {
                 if buf_lock.is_read_end_closed() {
-                    return Ok(alread_write);
+                    return Ok(already_written);
                 } else {
                     drop(buf_lock);
                     suspend_current_task();
@@ -105,13 +114,15 @@ impl File for Pipe {
             for _ in 0..free_write {
                 buf_lock.write_byte(buf[buf_off]);
                 buf_off += 1;
-                alread_write += 1;
-                if alread_write == buf_len {
-                    return Ok(alread_write);
+                already_written += 1;
+                if already_written == buf_len {
+                    return Ok(already_written);
                 }
             }
         }
     }
+
+    // TODO: 在完成信号模块之后，这里需要添加唤醒机制
 }
 
 #[derive(PartialEq)]
@@ -204,4 +215,3 @@ impl PipeRingBuffer {
         }
     }
 }
-

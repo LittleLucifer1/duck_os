@@ -4,10 +4,11 @@ use alloc::{ sync::Arc, vec::Vec};
 use bitmap_allocator::{BitAlloc, BitAlloc256};
 use hashbrown::HashMap;
 
-use crate::{config::fs::MAX_FD, syscall::error::OSResult};
+use crate::{config::fs::MAX_FD, syscall::error::{Errno, OSResult}};
 
 use super::{dentry::Dentry, file::File, info::OpenFlags, stdio::{Stderr, Stdin, Stdout, STDERR, STDIN, STDOUT}};
 
+// TODO: 这里 MAX_FD 不能设置太大了，否则会超出 BitAlloc256 的限制
 pub struct FdAllocator {
     pub bitmap: BitAlloc256,
 }
@@ -40,28 +41,59 @@ impl FdAllocator {
     }
 }
 
+
+pub struct RLimit {
+    pub rlimit_curr: usize, // soft limit
+    pub rlimit_max: usize, // hard limit
+}
+
+impl RLimit {
+    fn new(value: usize) -> Self {
+        Self { rlimit_curr: value, rlimit_max: value }
+    }
+}
+
 // 这里的fd没有实现RAII，之后根据需求再判断要不要实现
 // TODO: 这里的fd_table完全可以更换为 hash table，而不采用BTreeMap
 pub struct FdTable {
     pub fd_table: HashMap<usize, FdInfo>,
     pub fd_allocator: FdAllocator,
+    rlimit: RLimit,
 }
 
 impl FdTable {
     // 插入file，返回出这个file的文件描述符
-    pub fn insert_get_fd(&mut self, fd_info: FdInfo) -> usize {
-        let fd = self.fd_allocator.alloc_fd().unwrap();
+    pub fn insert_get_fd(&mut self, fd_info: FdInfo) -> OSResult<usize> {
+        let fd = self.fd_allocator.alloc_fd().ok_or(Errno::EBADF)?;
         self.fd_table.insert(fd, fd_info);
-        fd
+        Ok(fd)
     }
 
     // 插入到特定的fd中，返回插入是否成功。不成功意味着这个new_fd已经在使用了
     pub fn insert_spec_fd(&mut self, new_fd: usize, fd_info: FdInfo) -> OSResult<bool> {
-        if self.fd_allocator.alloc_spec_fd(new_fd) {
+        if !self.test_fd(new_fd) {
+            Err(Errno::EBADF)
+        }
+        else if self.fd_allocator.alloc_spec_fd(new_fd) {
             self.fd_table.insert(new_fd, fd_info);
             Ok(true)
         } else {
             Ok(false)
+        }
+    }
+
+    pub fn test_fd(&self, fd: usize) -> bool {
+        if fd <= self.rlimit.rlimit_curr {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_rlimit(&self) -> RLimit {
+        RLimit { 
+            rlimit_curr: self.rlimit.rlimit_curr, 
+            rlimit_max: self.rlimit.rlimit_max 
         }
     }
 
@@ -80,7 +112,8 @@ impl FdTable {
             FdInfo::new(Arc::new(Stderr), OpenFlags::O_WRONLY)
         );
         let fd_allocator = FdAllocator::new();
-        Self { fd_table, fd_allocator }
+        let rlimit = RLimit::new(MAX_FD);
+        Self { fd_table, fd_allocator, rlimit }
     }
 
     pub fn close_exec(&mut self) {
@@ -115,7 +148,7 @@ impl FdTable {
     pub fn open(&mut self, dentry: Arc<dyn Dentry>, flags: OpenFlags) -> OSResult<usize> {
         let file = dentry.open(Arc::clone(&dentry), flags.clone())?;
         let fd_info = FdInfo::new(file, flags);
-        Ok(self.insert_get_fd(fd_info))
+        self.insert_get_fd(fd_info)
     }
 
     pub fn close(&mut self, fd: usize) {
@@ -127,6 +160,7 @@ impl FdTable {
 #[derive(Clone)]
 pub struct FdInfo {
     pub file: Arc<dyn File>,
+    // TODO：可以不使用这个flags,可以自己再创造一个专门的flags
     pub flags: OpenFlags,
 }
 

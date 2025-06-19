@@ -20,13 +20,29 @@ use crate::{config::timer::{MSEC_PER_SEC, NSEC_PER_MSEC, NSEC_PER_SEC}, timer::{
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum InodeMode {
-    Socket,
-    Link,
-    Regular,
-    Block,
-    Directory,
-    Char,
-    FIFO,
+    Socket, // 套接字文件，进程间通信或网络通信
+    Link, // 链接文件，硬链接直接指向文件的Inode，而软链接则存储目标文件路径
+    Regular, // 普通文件，文本文件、图片、可执行程序
+    Block, // 块设备文件，硬盘或 U盘
+    Directory, // 目录文件
+    Char,// 字符设备文件，键盘、鼠标、串口设备
+    FIFO, // 管道文件
+    UNKNOWN, // 类型未知
+}
+
+impl From<usize> for InodeMode {
+    fn from(value: usize) -> Self {
+        match value {
+            1 => InodeMode::Regular,
+            2 => InodeMode::Directory,
+            3 => InodeMode::Char,
+            4 => InodeMode::Block,
+            5 => InodeMode::FIFO,
+            6 => InodeMode::Socket,
+            7 => InodeMode::Link,
+            _ => InodeMode::UNKNOWN,
+        }
+    }
 }
 
 // https://man7.org/linux/man-pages/man3/timespec.3type.html

@@ -21,7 +21,7 @@
         1）create: 在某一目录下，为与目录项对想相关的普通文件创建一个磁盘索引节点
         2）mkdir / mknod：在某一目录下，为与目录项对想相关的特殊文件/目录 创建一个磁盘索引节点
         3) metadata: 获得相关的元数据
-        // 4）link：创建硬链接
+        4）link：创建硬链接
         5）lookup: 为包含在一个目录项对想的文件名对应的索引节点查找目录
         6）rename：移动文件
     
@@ -30,8 +30,9 @@
 use core::sync::atomic::AtomicUsize;
 
 use alloc::{sync::Arc, vec::Vec};
+use downcast_rs::{impl_downcast, DowncastSync};
 
-use crate::{driver::BlockDevice, sync::SpinLock};
+use crate::{driver::BlockDevice, sync::SpinLock, syscall::error::OSResult};
 
 use super::info::{InodeMode, TimeSpec};
 
@@ -48,6 +49,8 @@ pub struct InodeMetaInner {
     pub i_mtime: TimeSpec, /* Time of last modification 每当文件数据被修改，例如文件被写入或截断时，它就会更新。*/
     pub i_ctime: TimeSpec, /* Time of last status change 每当inode关联的元数据发生变化时，比如文件权限被修改或文件被重命名时，它就会更新。*/
     pub i_size: usize,
+    pub i_link_count: usize, // 硬链接数
+    pub i_open_count: usize, // 进程打开文件数
 }
 
 impl InodeMeta {
@@ -72,6 +75,8 @@ impl InodeMeta {
                     i_mtime: mtime,
                     i_ctime: ctime,
                     i_size: size,
+                    i_link_count: 1,
+                    i_open_count: 0,
                 }
             )
         }
@@ -80,19 +85,22 @@ impl InodeMeta {
 
 static INODE_NUM_ALLOCATOR: AtomicUsize = AtomicUsize::new(0);
 
-pub trait Inode: Sync + Send {
+pub trait Inode: Sync + Send + DowncastSync {
     fn metadata(&self) -> &InodeMeta;
 
-    fn delete_data(&self);
-    fn read(&self, offset: usize, buf: &mut [u8]);
-    fn write(&self, offset: usize, buf: &mut [u8]);
+    fn delete_data(&self) -> OSResult<()>;
+    fn read(&self, offset: usize, buf: &mut [u8]) -> OSResult<usize>;
+    fn write(&self, offset: usize, buf: &mut [u8]) -> OSResult<usize>;
     // 用于读整个elf文件
-    fn read_all(&self) -> Vec<u8>;
+    fn read_all(&self) -> OSResult<Vec<u8>>;
 }
+
+impl_downcast!(sync Inode);
 
 pub enum InodeDev {
     BlockDev(BlockDevWrapper),
-    // TODO: 
+    Todo,
+    // TODO: 没搞明白这个东西是什么？？？？
 }
 
 // TODO：这里的id没有弄明白是什么？

@@ -4,6 +4,7 @@ use core::{cell::UnsafeCell, marker::PhantomData, ops::{Deref, DerefMut}, sync::
 
 use super::MutexAction;
 
+// ?Sized 表示 T 可以是动态大小类型（如 [u8] 或 dyn Trait），用于支持灵活的数据存储。
 pub struct SpinMutex<T:?Sized, Action: MutexAction> {
     _marker: PhantomData<Action>,
     lock: AtomicBool,

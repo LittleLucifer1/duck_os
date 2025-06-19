@@ -1,9 +1,9 @@
 //！ 处理user_stack中的信息
+// 参考资料：https://github.com/chenpengcong/blog/issues/18
 
 use alloc::{string::String, vec::Vec};
 use xmas_elf::ElfFile;
-use alloc::vec;
-use crate::config::mm::PAGE_SIZE;
+use crate::{config::mm::PAGE_SIZE, process::hart::env::SumGuard, utils::random::RANDOM_GENERATOR};
 
 pub struct StackInfo {
     auxv: Vec<(usize, usize)>,
@@ -39,9 +39,7 @@ impl StackInfo {
                 break;
             }
         }
-        self.auxv.push((AT_NULL, 0));
         self.auxv.push((AT_IGNORE, 0));
-
         self.auxv.push((AT_PHDR, elf_head_addr + elf.header.pt2.ph_offset() as usize));
         self.auxv.push((AT_PHENT, elf.header.pt2.ph_entry_size() as usize));
         self.auxv.push((AT_PHNUM, elf.header.pt2.ph_count() as usize));
@@ -52,10 +50,10 @@ impl StackInfo {
         self.auxv.push((AT_UID, 0 as usize));
         self.auxv.push((AT_GID, 0 as usize));
         self.auxv.push((AT_EGID, 0 as usize));
-        self.auxv.push((AT_PLATFORM, 0 as usize));
         self.auxv.push((AT_HWCAP, 0 as usize));
         self.auxv.push((AT_CLKTCK, 100 as usize));
         self.auxv.push((AT_SECURE, 0 as usize));
+        
     }
 
     pub fn set_auxv_at_base(&mut self, value: usize) {
@@ -66,16 +64,26 @@ impl StackInfo {
         self.auxv.push((AT_RANDOM, value));
     }
 
+    pub fn set_auxv_at_null(&mut self, _value: usize) {
+        self.auxv.push((AT_NULL, 0));
+    }
+
     pub fn set_auxv_at_execfn(&mut self, value: usize) {
         self.auxv.push((AT_EXECFN, value));
     }
 
+    pub fn set_auxv_at_platform(&mut self, value: usize) {
+        self.auxv.push((AT_PLATFORM, value));
+    }
+
+    // TODO： 这里的 argv_addr 采用的是push，所以第一个argument的地址放在第一个，不知道有没有问题？？？？
     pub fn build_stack(&mut self, ustack_sp: usize) -> (usize, StackLayout) {
+        let _sum = SumGuard::new();
         let mut sp = ustack_sp;
         let args_len = self.args.len();
         let envs_len = self.envs.len();
-        let mut argv_addr: Vec<usize> = vec![0; args_len];
-        let mut envp_addr: Vec<usize> = vec![0; envs_len];
+        let mut argv_addr: Vec<usize> = Vec::with_capacity(args_len);
+        let mut envp_addr: Vec<usize> = Vec::with_capacity(envs_len);
 
         // construct envp str
         for i in 0..envs_len {
@@ -85,12 +93,16 @@ impl StackInfo {
             sp -= self.envs[i].len();
             let ptr = sp as *mut u8;
             envp_addr.push(sp);
+            
             unsafe {
-                ptr.copy_from(self.envs[i].as_ptr(), self.envs[i].len());
+                core::ptr::copy_nonoverlapping(
+                    self.envs[i].as_ptr(), ptr, self.envs[i].len()
+                );
                 *end_ptr = 0;
             }
         }
-        sp -= sp % core::mem::size_of::<usize>();
+        // 这里我们以16字节对齐 sp指针
+        sp &= !(core::mem::size_of::<usize>() * 2 - 1);
 
         // construct argument str
         for i in 0..args_len {
@@ -101,35 +113,65 @@ impl StackInfo {
             let ptr = sp as *mut u8;
             argv_addr.push(sp);
             unsafe {
-                ptr.copy_from(self.args[i].as_ptr(), self.args[i].len());
+                // ptr.copy_from(self.args[i].as_ptr(), self.args[i].len());
+                core::ptr::copy_nonoverlapping(
+                    self.args[i].as_ptr(), ptr, self.args[i].len()
+                );
                 *end_ptr = 0;
             }
         }
-        sp -= sp % core::mem::size_of::<usize>();
+        // padding for align
+        // 这里我们以16字节对齐 sp指针
+        sp &= !(core::mem::size_of::<usize>() * 2 - 1);
 
-        // TODO：这里有几个操作没有执行，暂时不知道是什么！
-        // 载入文件名  载入平台名  载入random number padding？
+        // 载入platform
+        let platform = b"riscv64\0";
+        sp = sp - platform.len();
+
+        self.set_auxv_at_platform(sp);
+        let ptr = sp as *mut u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                platform.as_ptr(), ptr, platform.len()
+            );
+        }
+        
+        // 载入random bytes
+        sp -= core::mem::size_of::<usize>() * 2;
+        self.set_auxv_at_random(sp);
+        let ptr = sp as *mut u8;
+        let mut random_bytes = [0u8; 16];
+        let mut rng = RANDOM_GENERATOR.lock();
+        for i in 0..4 {
+            random_bytes[i*4..(i+1)*4].copy_from_slice(&rng.genrand_u32().to_be_bytes());
+        }
+        drop(rng);
+        unsafe {
+            core::ptr::copy_nonoverlapping(random_bytes.as_ptr(), ptr, 16);
+        }
+        // padding 对齐16字节
+        sp &= !(core::mem::size_of::<usize>() * 2 - 1);
 
         // construct auxv
-        sp -= sp % (core::mem::size_of::<usize>() * 2);
-        self.set_auxv_at_random(sp);
+        self.set_auxv_at_execfn(argv_addr[0]);
+        self.set_auxv_at_null(0);
         let auxv_size = core::mem::size_of::<usize>() * 2;
         let auxv_space = self.auxv.len() * auxv_size;
         sp -= auxv_space;
         let auxv_0 = sp; // 记录下第一个的位置
-        for i in 0..self.auxv.len() {
-            let val_ptr = (sp + i*core::mem::size_of::<usize>()) as *mut usize;
-            let at_ptr = (sp + i*auxv_size) as *mut usize;
+        for (i, &(key, value)) in self.auxv.iter().enumerate() {
+            let ptr = (sp + i * auxv_size) as *mut usize;
             unsafe {
-                *val_ptr = self.auxv[i].1;
-                *at_ptr = self.auxv[i].0;
+                *ptr.offset(0) = key;
+                *ptr.offset(1) = value;
             }
         }
+
         // construct envp pointer
         let envp_space = envp_addr.len() * core::mem::size_of::<usize>();
         sp -= core::mem::size_of::<usize>();
         unsafe {
-            *(sp as *mut u8) = 0;
+            *(sp as *mut usize) = 0; // 代表着 envp[term] = NULL
         }
         sp -= envp_space;
         let envp_0 = sp;
@@ -143,7 +185,7 @@ impl StackInfo {
         let argv_space = argv_addr.len() * core::mem::size_of::<usize>();
         sp -= core::mem::size_of::<usize>();
         unsafe {
-            *(sp as *mut u8) = 0;
+            *(sp as *mut usize) = 0; // 代表着 argv[term] = NULL
         }
         sp -= argv_space;
         let argv_0 = sp;
@@ -157,9 +199,9 @@ impl StackInfo {
         sp -= core::mem::size_of::<usize>();
         let argc_0 = sp;
         unsafe {
-            *(sp as *mut u8) = self.args.len() as u8;
+            *(sp as *mut usize) = self.args.len() as usize;
         }
-        
+        // TODO：不太确定这里的sp是否还要对齐到16字节 ？？？？？
         (sp, StackLayout::new(argc_0, argv_0, envp_0, auxv_0))
     }
 
@@ -176,6 +218,10 @@ pub struct StackLayout {
 impl StackLayout {
     pub fn new(argc: usize, argv: usize, envp: usize, auxv: usize) -> Self {
         Self { argc, argv, envp, auxv, }
+    }
+
+    pub fn empty() -> Self {
+        Self { argc: 0, argv: 0, envp: 0, auxv: 0 }
     }
 }
 

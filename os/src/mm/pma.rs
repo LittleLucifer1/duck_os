@@ -20,10 +20,10 @@
 use alloc::{collections::BTreeMap, sync::{Arc, Weak}};
 use log::debug;
 
-use crate::{config::{fs::SECTOR_SIZE, mm::PAGE_SIZE}, fs::{file::File, inode::Inode}, sync::SpinLock, syscall::error::OSResult};
+use crate::{config::{fs::SECTOR_SIZE, mm::{PAGE_SIZE, PAGE_SIZE_BITS}}, fs::{file::File, inode::Inode}, sync::SpinLock, syscall::error::OSResult};
 
 use super::{
-    address::{align_down, byte_array, get_mut, get_ref, ppn_to_phys, virt_to_vpn},
+    address::{byte_array, get_mut, get_ref, ppn_to_phys, virt_to_vpn},
     allocator::frame::{alloc_frame, FrameTracker}, 
     type_cast::PagePermission,
 };
@@ -39,17 +39,18 @@ const DATA_SIZE: usize = PAGE_SIZE / SECTOR_SIZE;
 
 pub struct DiskFileInfo {
     // TODO：名字有些误导性，这个数据结构描述的是page用来表示磁盘上文件时的信息
-    // file_offset: 在以页面为单位下，文件offset所在页面的页面初始位置,
+    // page_num_offset: 在以页面为单位下，该page所在的文件offset位置,
+    // 即把file分割为页大小，现在为第几页
     inode: Weak<dyn Inode>,
-    file_offset: usize,
+    page_num_offset: usize,
     data_state: [DataState; DATA_SIZE],
 }
 
 impl DiskFileInfo {
-    pub fn new(inode: Weak<dyn Inode>, f_offset: usize) -> Self {
+    pub fn new(inode: Weak<dyn Inode>, page_num_offset: usize) -> Self {
         Self {
             inode,
-            file_offset: f_offset,
+            page_num_offset: page_num_offset,
             data_state: [DataState::Empty; DATA_SIZE],
         }
     }
@@ -83,11 +84,11 @@ impl Page {
     }
 
     // 根据磁盘上的信息创建一个空的page，之后会保存在page cache中
-    pub fn new_disk_page(per: PagePermission, inode: Weak<dyn Inode>, offset: usize) -> Self {
+    pub fn new_disk_page(per: PagePermission, inode: Weak<dyn Inode>, page_num_offset: usize) -> Self {
         Self {
             frame: alloc_frame().unwrap(),
             permission: per,
-            disk_file: Some(SpinLock::new(DiskFileInfo::new(inode, offset))),
+            disk_file: Some(SpinLock::new(DiskFileInfo::new(inode, page_num_offset))),
             cow_count: SpinLock::new(0),
         }
     }
@@ -119,10 +120,17 @@ impl Page {
     fn to_sec_idx(page_offset: usize) -> usize {
         page_offset / SECTOR_SIZE 
     }
-    // 一个页面的读写，目前好像只有抽象的内存文件会调用这个函数，可能去磁盘上读数据。
-    // 内存中的页读取只需要使用page_byte_array函数即可。
+
+    pub fn clear(&self) {
+        let page_content = self.page_byte_array();
+        page_content.fill(0);
+    }
+
+    // 一个页面的读写，目前好像只有抽象的内存文件会调用这个函数，可能去磁盘上读写数据。
+    // 内存中的页读取只需要使用page_byte_array函数即可。 DONE：现在已经不是了
     // page_offset: 为页面中的offset值
     // 如果对应磁盘上的文件时：内存中的一个页相当于磁盘上的8个块
+    // 先把数据读到page中，再把page中的数据复制到buf中
     pub fn read(&self, page_offset: usize, buf: &mut [u8]) {
         assert!(page_offset < PAGE_SIZE);
         let len: usize = buf.len().min(PAGE_SIZE - page_offset);
@@ -130,15 +138,16 @@ impl Page {
         if self.disk_file.is_some() {
             let end_offset = page_offset + len;
             // 找到8个block中数据所在的id
+            // TODO：重构 考虑根据idx的数量动态判断是每次读取sector大小的数据，还是每次读取一整个页的数据
             for idx in Self::to_sec_idx(page_offset)..Self::to_sec_idx(end_offset - 1 + SECTOR_SIZE) {
                 let mut disk_file_lock = self.disk_file.as_ref().unwrap().lock();
                 if disk_file_lock.data_state[idx] == DataState::Empty {
-                    // offset：文件的位置 = 页开始的位置 + 页中某个块的开始位置
+                    // offset：要读的数据相对文件的位置 = 页相对文件的开始位置 + 页细分为某个块的开始位置
                     // buf：读到以块为单位的页其中某个块上，大小为块大小。
                     disk_file_lock.inode.upgrade().unwrap().read(
-                        disk_file_lock.file_offset + idx * SECTOR_SIZE,
+                        disk_file_lock.page_num_offset >> PAGE_SIZE_BITS + idx * SECTOR_SIZE,
                         &mut self.page_byte_array()[idx*SECTOR_SIZE..(idx+1)*SECTOR_SIZE],
-                    );
+                    ).expect("[pma.rs] Read data wrong");
                     disk_file_lock.change_data_state(DataState::Sync, idx);
                 }
                 drop(disk_file_lock);
@@ -152,15 +161,16 @@ impl Page {
     }
 
     // 装载整个page的内容。TODO: 暂时先考虑整页的load DONE！
+    // 暂时只用于page_fault中，加载一整个页的内容
     pub fn load(&self) {
         if self.disk_file.is_some() {
             for idx in 0..(PAGE_SIZE / SECTOR_SIZE) {
                 let mut disk_file_lock = self.disk_file.as_ref().unwrap().lock();
                 if disk_file_lock.data_state[idx].eq(&DataState::Empty) {
                     disk_file_lock.inode.upgrade().unwrap().read(
-                        disk_file_lock.file_offset + idx * SECTOR_SIZE,
+                        disk_file_lock.page_num_offset >> PAGE_SIZE_BITS + idx * SECTOR_SIZE,
                         &mut self.page_byte_array()[idx*SECTOR_SIZE..(idx+1)*SECTOR_SIZE], 
-                    );
+                    ).expect("[pma.rs] Read data wrong");
                     disk_file_lock.change_data_state(DataState::Sync, idx);
                 }
             }
@@ -175,16 +185,15 @@ impl Page {
         let len: usize = buf.len().min(PAGE_SIZE - page_offset);
         let start = page_offset;
         let end = page_offset + len;
-        // 如果是磁盘上的文件
         if self.disk_file.is_some() {
             let end_offset = page_offset + len;
             for idx in Self::to_sec_idx(page_offset)..Self::to_sec_idx(end_offset - 1 + SECTOR_SIZE) {
                 let mut disk_file_lock = self.disk_file.as_ref().unwrap().lock();
                 if disk_file_lock.data_state[idx] == DataState::Empty {
                     disk_file_lock.inode.upgrade().unwrap().read(
-                        disk_file_lock.file_offset + idx * SECTOR_SIZE,
+                        disk_file_lock.page_num_offset >> PAGE_SIZE_BITS + idx * SECTOR_SIZE,
                         &mut self.page_byte_array()[idx*SECTOR_SIZE..(idx+1)*SECTOR_SIZE],
-                    );
+                    ).expect("[pma.rs] Read data wrong");
                     disk_file_lock.change_data_state(DataState::Dirty, idx);
                 } else if disk_file_lock.data_state[idx] == DataState::Sync {
                     disk_file_lock.change_data_state(DataState::Dirty, idx);
@@ -199,7 +208,7 @@ impl Page {
 
     pub fn sync(&self) -> OSResult<()> {
         let disk_file_lock = self.disk_file.as_ref().unwrap().lock();
-        let file_offset = disk_file_lock.file_offset;
+        let file_offset = disk_file_lock.page_num_offset >> PAGE_SIZE_BITS;
         let inode = disk_file_lock.inode.upgrade().unwrap().clone();
         // 1.对每个块进行状态检查
         for idx in 0..PAGE_SIZE / SECTOR_SIZE {
@@ -214,7 +223,7 @@ impl Page {
                 inode.write(
                     file_off,
                     &mut self.page_byte_array()[page_offset..page_offset+SECTOR_SIZE],
-                );
+                ).expect("[pma.rs] Write data wrong");
             } else {
                 todo!("Unreachable!");
             }
@@ -228,7 +237,7 @@ impl Page {
 #[derive(Clone)]
 pub struct BackenFile {
     pub offset: usize, // 文件被映射的部分在文件中的开始位置
-    pub file: Arc<dyn File>,
+    pub file: Arc<dyn File>, // 为 某个文件系统中的抽象的 File
 }
 
 // TODO：这个应该也要实现sync的功能
@@ -242,6 +251,7 @@ pub struct PhysMemoryAddr {
     // (key: vpn, value: page)
     // 这个设计目前看起来有点鸡肋，只是做一做增删查改的工作
     // 对于page中的permission基本上没有什么改动
+    // TODO：这个真的是使用 b树 的结构吗？为什么不用 hash_table 呢？
     pub page_manager: BTreeMap<usize, Arc<Page>>,
     // mmap时，物理内存对应磁盘上的文件
     pub backen_file: Option<BackenFile>,
@@ -281,6 +291,7 @@ impl PhysMemoryAddr {
     pub fn shrink_left(&mut self, new_start: usize, old_start: usize) {
         // 不用检查区间的情况，这些都交给上一层 vma中处理
         // TODO： 如何解决判断区间页的问题？我该怎么去除页？会不会有保证一定是页首地址？
+        // TODO：这里的逻辑会不会有什么问题？可能是 old_vpn..new_vpn
         let old_vpn = virt_to_vpn(old_start);
         let new_vpn = virt_to_vpn(new_start);
         for vpn in old_vpn..=new_vpn {
@@ -317,42 +328,57 @@ impl PhysMemoryAddr {
         Some(self.page_manager.get(&vpn).unwrap().frame.ppn)
     }
 
-    // 读写相关的函数
-    // 相关函数的接口形式可以参考maturin
-    pub fn read_write_pma_page(
-        &mut self, 
-        offset: usize,
-        len: usize,
-        mut op: impl FnMut(usize, &mut [u8])
-    ) -> usize {
-        let mut start = offset;
-        let mut len = len;
-        let mut finished = 0usize;
-        while len > 0 {
-            let start_align = align_down(start);
-            let page_offset = start - start_align;
-            let n = (PAGE_SIZE - page_offset).min(len);
-            let vpn = virt_to_vpn(start_align);
+    // function: 根据 va，将data写入相关的页中，这里确保一下一定有这个页，否则就要报错
+    // Assumption: 一定有这个页，只对一页进行写操作 data不能超过一页
+    pub fn write_data_to_page(&mut self, vpn: usize, data: &[u8], offset: usize) {
+        assert!(data.len() + offset <= PAGE_SIZE);
+        self.page_manager.get(&vpn).unwrap()
+            .write(offset, data);
+    }
+    // function: 根据 va，将data写入相关的页中
+    // Assumption: 一定有这个页，只对一页进行读操作 data不能超过一页
+    pub fn read_data_from_page(&self, vpn: usize, data: &mut [u8], offset: usize) {
+        assert!(data.len() + offset <= PAGE_SIZE);
+        self.page_manager.get(&vpn).unwrap()
+            .read(offset, data);
+    }
+
+    // TODO：太多乱七八糟的读写函数了，有点滥用了
+    // DONE：以下的内容均不使用，我们将这部分的内容提前到了vma中进行。
+    // pub fn read_write_pma_page(
+    //     &mut self, 
+    //     offset: usize,
+    //     len: usize,
+    //     mut op: impl FnMut(usize, &mut [u8])
+    // ) -> usize {
+    //     let mut start = offset;
+    //     let mut len = len;
+    //     let mut finished = 0usize;
+    //     while len > 0 {
+    //         let start_align = align_down(start);
+    //         let page_offset = start - start_align;
+    //         let n = (PAGE_SIZE - page_offset).min(len);
+    //         let vpn = virt_to_vpn(start_align);
             
-            // let _page = self.page_manager.get_mut(&vpn).unwrap();
-            op(finished, &mut self.page_manager.get(&vpn).unwrap().page_byte_array()[page_offset..page_offset+n]);
-            start += n;
-            len -= n;
-            finished += n;
-        }
-        finished
-    }
+    //         // let _page = self.page_manager.get_mut(&vpn).unwrap();
+    //         op(finished, &mut self.page_manager.get(&vpn).unwrap().page_byte_array()[page_offset..page_offset+n]);
+    //         start += n;
+    //         len -= n;
+    //         finished += n;
+    //     }
+    //     finished
+    // }
 
-    pub fn read_pma_page(&mut self, offset: usize, dst: &mut [u8]) -> usize {
-        self.read_write_pma_page(offset, dst.len(), |finished: usize, src: &mut [u8]|{
-            dst[finished..finished + src.len()].copy_from_slice(src)
-        })
-    }
+    // pub fn read_pma_page(&mut self, offset: usize, dst: &mut [u8]) -> usize {
+    //     self.read_write_pma_page(offset, dst.len(), |finished: usize, src: &mut [u8]|{
+    //         dst[finished..finished + src.len()].copy_from_slice(src)
+    //     })
+    // }
 
-    pub fn write_pmd_page(&mut self, offset: usize, src: &mut [u8]) -> usize {
-        self.read_write_pma_page(offset, src.len(), |finished: usize, dst: &mut [u8]| {
-            dst.copy_from_slice(&src[finished..finished + dst.len()]);
-        })
-    }
+    // pub fn write_pmd_page(&mut self, offset: usize, src: &mut [u8]) -> usize {
+    //     self.read_write_pma_page(offset, src.len(), |finished: usize, dst: &mut [u8]| {
+    //         dst.copy_from_slice(&src[finished..finished + dst.len()]);
+    //     })
+    // }
     // 同步的相关函数(暂时不用考虑)
 }

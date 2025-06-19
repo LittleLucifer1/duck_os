@@ -67,7 +67,38 @@ pub const KERNEL_PTE_POS: usize = 510;
 pub const KERNEL_MMIO_PTE_POS: usize = 508;
 
 // Mmap区域的最高处
-pub const MMAP_TOP: usize = 0x0f5f_f000;
-
+// pub const MMAP_TOP: usize = 0x0f5f_f000; ?? 这里的mmap区间地址好像有问题？
+pub const MMAP_TOP: usize = 0xff5f_f000;
 // Mmap区域的最低处
-pub const MMAP_BOTTOM: usize = 0x0e5f_f000;
+// pub const MMAP_BOTTOM: usize = 0x0e5f_f000;
+pub const MMAP_BOTTOM: usize = 0xfe5f_f000;
+
+// 动态加载器的 base地址
+pub const DL_INTERP_OFFSET: usize = 0x8000_0000;
+
+
+// TODO: 以下数据全部都是杜撰的
+// Total memory
+pub const TOTAL_MEM_SIZE: usize = 0x1;
+
+// Free memory
+pub const FREE_MEM_SIZE: usize = 0x1;
+
+// Avail memory
+pub const AVAIL_MEM_SIZE: usize = 0x1;
+
+// Buffer and cache
+pub const BUFFER_SIZE: usize = 0x2;
+pub const CACHE_SIZE: usize = 0x3;
+
+// Total Swap
+pub const TOTAL_SWAP_SIZE: usize = 0x4;
+
+// Free Swap
+pub const FREE_SWAP_SIZE: usize = 0x4;
+
+// Shared Memory
+pub const SHARED_MEMORY_SIZE: usize = 0x5;
+
+// Slab
+pub const SLAB_SIZE: usize = 0x6;

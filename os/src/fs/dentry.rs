@@ -1,5 +1,4 @@
-//! dentry模块
-//! 
+//! dentry模块 
 
 /*
     所有的dentry构成一棵树的形式。并且应该存放在cache中。
@@ -14,7 +13,6 @@
     2. 功能
         1） 生成 hash值，方便放入hash table中（待定）
 */
-
 
 use core::any::Any;
 
@@ -71,15 +69,32 @@ impl DentryMeta {
 
 pub trait Dentry: Sync + Send + Any {
     fn metadata(&self) -> &DentryMeta;
-    fn load_child(&self, this: Arc<dyn Dentry>);
-    fn load_all_child(&self, this: Arc<dyn Dentry>);
+    fn load_child(&self, this: Arc<dyn Dentry>) -> OSResult<()> {
+        todo!()
+    }
+    fn load_all_child(&self, this: Arc<dyn Dentry>) -> OSResult<()> {
+        todo!()
+    }
     // 查找inode的子节点，并返回对应的dentry,负责把child_inode创建好，挂在dentry上
     // 从磁盘上找相关的数据，然后建立对应的dentry,并返回
     fn open(&self, dentry: Arc<dyn Dentry>, flags: OpenFlags) -> OSResult<Arc<dyn File>>;
     fn create(&self, this: Arc<dyn Dentry>, name: &str, mode: InodeMode) -> OSResult<Arc<dyn Dentry>>;
-    fn mkdir(&self, path: &str, mode: InodeMode) -> Arc<dyn Dentry>;
-    fn mknod(&self, path: &str, mode: InodeMode, dev_id: Option<usize>) -> Arc<dyn Dentry>;
-    fn unlink(&self, child: Arc<dyn Dentry>);
+    fn unlink(&self, child: Arc<dyn Dentry>) -> OSResult<()>;
+    fn look_up(self: Arc<Self>, _name: &str) -> Option<Arc<dyn Dentry>> {
+        None
+    }
+    fn link(&self, parent: Arc<dyn Dentry>, new_name: &str) -> OSResult<()> {
+        todo!()
+    }
+    fn rename(&self, old_name: &str, new_parent: Arc<dyn Dentry>, new_name: &str) -> OSResult<()> {
+        todo!()
+    }
+    fn symbol_link(self: Arc<Self>, name: &str, target: &str) -> OSResult<()> {
+        todo!()
+    }
+    fn read_symlink(&self, buf: &mut [u8]) -> OSResult<()> {
+        todo!()
+    }
     fn list_child(&self) {
         let meta_inner = self.metadata().inner.lock();
         println!("cwd: {} --", meta_inner.d_path);
@@ -91,13 +106,13 @@ pub trait Dentry: Sync + Send + Any {
 
 lazy_static! {
     // (path, Dentry)
-    // TODO: 或许需要换成radix tree？因为需要有前缀查找的功能
+    // TODO:【重构】或许需要换成radix tree？因为需要有前缀查找的功能
     pub static ref DENTRY_CACHE: SpinLock<HashMap<String, Arc<dyn Dentry>>> = SpinLock::new(HashMap::new());
 }
 
 // Assumption: 此时的path是合法的绝对路径，并且是format的
 // function: 在Cache中查找dentry
-pub fn path_to_dentry_cache(path: &str) -> Option<Arc<dyn Dentry>> {
+fn path_to_dentry_cache(path: &str) -> Option<Arc<dyn Dentry>> {
     if let Some(dentry) = DENTRY_CACHE
         .lock()
         .get(path) {
@@ -112,15 +127,15 @@ pub fn path_to_dentry_cache(path: &str) -> Option<Arc<dyn Dentry>> {
 /*
     1. openat：这个函数用来查找父dentry，此时的父dentry一定在cache中或者在树上。所以一定可以找到。
 */
-pub fn path_to_dentry(path: &str) -> Option<Arc<dyn Dentry>> {
+pub fn path_to_dentry(path: &str) -> OSResult<Option<Arc<dyn Dentry>>> {
     // 绝对路径在cache中查找
     if let Some(dentry) = path_to_dentry_cache(path){
-        Some(Arc::clone(&dentry))
+        Ok(Some(Arc::clone(&dentry)))
     } else {
         // 没找到，匹配前最大子串
         // TODO：优化部分，这里可以匹配一下cache中的最大匹配前字串，从而减少查找的时间
         // 1. 如果找到了前最大子串，则pa_dentry不是从根开始
-
+        
         // 2. 否则从根开始
         let mut pa_dentry = FILE_SYSTEM_MANAGER.root_dentry();
         let path_vec: Vec<&str> = path
@@ -130,24 +145,31 @@ pub fn path_to_dentry(path: &str) -> Option<Arc<dyn Dentry>> {
         // 开始遍历所有的路径
         for name in path_vec.into_iter() {
             // 先从树上找
-            if let Some((_, dentry)) = pa_dentry
-                .clone()
-                .metadata()
-                .inner
-                .lock()
-                .d_child
-                .iter()
-                .find(|(n , _)| name.eq(*n) ) {
-                    // 在树上找到了，插入cache中，然后继续遍历
-                    DENTRY_CACHE.lock().insert(dentry.metadata().inner.lock().d_path.to_string(), dentry.clone());
-                    pa_dentry = dentry.clone();
-                }
+            let next_dentry = {
+                let locked = pa_dentry.metadata().inner.lock();
+                locked.d_child.get(name).cloned()
+            };
+            if let Some(dentry) = next_dentry {
+                DENTRY_CACHE
+                    .lock()
+                    .insert(dentry.metadata().inner.lock().d_path.to_string(), dentry.clone());
+                pa_dentry = dentry;
+            }
             else {
-                // 树上没有找到，说明这个文件不存在，如果是在open函数中，则可能要创建，其他的就直接报错！
-                // 因为我确保了磁盘上每一个dentry都在树上 ----> 1. 初始化时所有的都在树上 2.创建新的dentry也给挂在树上
-                return None;
+                // 树上没有找到，文件可能在磁盘 或者 不存在
+                // 因为我确保了磁盘上每一个dentry都在树上 1. 初始化时所有的都在树上 2.创建新的dentry也给挂在树上
+                // 更新后：可以从磁盘上找文件
+                let dentry = pa_dentry.look_up(name);
+                if let Some(dentry) = dentry {
+                    // 如果在磁盘上
+                    pa_dentry = dentry;
+                } else {
+                    // 如果不在磁盘上，则不存在
+                    return Ok(None);
+                }
+                
             }
         }
-        Some(pa_dentry)
+        Ok(Some(pa_dentry))
     }
 }

@@ -161,44 +161,6 @@ impl PageTable {
         // }
     }
 
-    /// 找页表项 如果没有则创建一个 返回物理页号
-    pub fn find_pte_create(&mut self, vaddr: VirtAddr) -> &mut PageTableEntry {
-        let idx: (usize, usize, usize) = vaddr_to_pte_vpn(vaddr);
-        let idx_array: [usize; 3] = [idx.0, idx.1, idx.2];
-        let mut pa = self.root_paddr;
-        for i in 0..3 {
-            let pte = &mut pte_array(pa)[idx_array[i]];
-            if i == 2 {
-                return pte;
-            }
-            if !pte.is_valid() {
-                let frame = alloc_frame().unwrap();
-                *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
-                self.frames.push(frame);        
-            }
-            pa = ppn_to_phys(pte.ppn());
-        }
-        unreachable!();
-    }
-    // 找页表项 如果没有，则返回None
-    pub fn find_pte(&self, vaddr: VirtAddr) -> Option<&mut PageTableEntry> {
-        let idx: (usize, usize, usize) = vaddr_to_pte_vpn(vaddr);
-        let idx_array: [usize; 3] = [idx.0, idx.1, idx.2];
-        let mut pa = self.root_paddr;
-        for i in 0..3 {
-            let pte = &mut pte_array(pa)[idx_array[i]];
-            if !pte.is_valid() {
-                return None;      
-            }
-            if i == 2 {
-                return Some(pte);
-            }
-            
-            pa = ppn_to_phys(pte.ppn());
-        }
-        unreachable!();
-    }
-
     /// 映射一次虚拟页号和物理页号 同时要有flags
     pub fn map_one(&mut self, vpn: usize, ppn: usize, flags: PTEFlags) {
         let pte = self.find_pte_create(vpn_to_virt(vpn));
@@ -219,20 +181,19 @@ impl PageTable {
         }
     }
 
-    /// 由vpn查找pte
-    pub fn translate_vpn_to_pte(&self, vpn: usize) -> Option<PageTableEntry> {
-        if let Some(pte) = self.find_pte(vpn_to_virt(vpn)) {
-            Some(*pte)
+    /// 由 vaddr 查找 pte，返回出 pte的可变引用
+    pub fn translate_va_to_pte(&self, vaddr: VirtAddr) -> Option<&mut PageTableEntry> {
+        if let Some(pte) = self.find_pte(vaddr) {
+            Some(pte)
         } else {
             None
         }
     }
 
-    /// 由va查找pa
+    /// 由 va 查找 pa
     pub fn translate_va_to_pa(&self, vaddr: VirtAddr) -> Option<PhysAddr> {
-        let vpn = virt_to_vpn(vaddr);
         let offset = vaddr_offset(vaddr);
-        if let Some(pte) = self.translate_vpn_to_pte(vpn) {
+        if let Some(pte) = self.translate_va_to_pte(vaddr) {
             assert!(pte.is_valid());
             Some(ppn_to_phys(pte.ppn()) + offset)
         } else {
@@ -241,11 +202,50 @@ impl PageTable {
     }
 
     pub fn modify_flags(&self, vpn: usize, flags: PTEFlags) {
-        let mut pte = self.translate_vpn_to_pte(vpn).unwrap();
+        let pte = self.translate_va_to_pte(vpn_to_virt(vpn)).unwrap();
         // 只需要修改UXWR四位
         for i in 1..=4 {
             pte.pte.set_bit(i,flags.bits().get_bit(i));
         }
+    }
+    
+    /// 找页表项 如果没有则创建一个 返回物理页号
+    fn find_pte_create(&mut self, vaddr: VirtAddr) -> &mut PageTableEntry {
+        let idx: (usize, usize, usize) = vaddr_to_pte_vpn(vaddr);
+        let idx_array: [usize; 3] = [idx.0, idx.1, idx.2];
+        let mut pa = self.root_paddr;
+        for i in 0..3 {
+            let pte = &mut pte_array(pa)[idx_array[i]];
+            if i == 2 {
+                return pte;
+            }
+            // TODO:这里应该根据具体的flags进行判断，只判断 V 是不充足的
+            if !pte.is_valid() {
+                let frame = alloc_frame().unwrap();
+                *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
+                self.frames.push(frame);        
+            }
+            pa = ppn_to_phys(pte.ppn());
+        }
+        unreachable!();
+    }
+    // 找页表项 如果没有，则返回None
+    fn find_pte(&self, vaddr: VirtAddr) -> Option<&mut PageTableEntry> {
+        let idx: (usize, usize, usize) = vaddr_to_pte_vpn(vaddr);
+        let idx_array: [usize; 3] = [idx.0, idx.1, idx.2];
+        let mut pa = self.root_paddr;
+        for i in 0..3 {
+            let pte = &mut pte_array(pa)[idx_array[i]];
+            if !pte.is_valid() {
+                return None;      
+            }
+            if i == 2 {
+                return Some(pte);
+            }
+            
+            pa = ppn_to_phys(pte.ppn());
+        }
+        unreachable!();
     }
 
 }

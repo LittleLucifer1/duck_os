@@ -1,23 +1,36 @@
 use bitflags::bitflags;
+use fs::{sys_ftruncate, sys_linkat, sys_lseek, sys_readlinkat, sys_renameat2, sys_symlinkat};
+use misc::sys_getrandom;
 
 use crate::{config::{fs::SECTOR_SIZE, timer::USEC_PER_SEC}, fs::info::{InodeMode, TimeSpec}, timer::current_time_ns};
 
-use self::{fs::{sys_chdir, sys_close, sys_dup, sys_dup3, sys_fstat, sys_getcwd, sys_getdents64, sys_mkdirat, sys_mount, sys_openat, sys_pipe2, sys_read, sys_umount2, sys_uname, sys_unlinkat, sys_write}, mm::{sys_brk, sys_mmap, sys_mprotect, sys_munmap}, process::{sys_clone, sys_execve, sys_exit, sys_getpid, sys_getppid, sys_gettid, sys_wait4, sys_yield}, timer::{sys_gettimeofday, sys_nanosleep, sys_times}};
+use self::{
+    fs::{
+        sys_chdir, sys_close, sys_dup, sys_dup3, sys_fstat, sys_getcwd, sys_getdents64, sys_mkdirat, sys_mount, 
+        sys_openat, sys_pipe2, sys_read, sys_umount2, sys_uname, sys_unlinkat, sys_write
+    }, 
+    mm::{sys_brk, sys_mmap, sys_mprotect, sys_munmap}, 
+    process::{sys_clone, sys_execve, sys_exit, sys_getpid, sys_getppid, sys_gettid, sys_wait4, sys_yield}, 
+    timer::{sys_gettimeofday, sys_nanosleep, sys_times}
+};
 
 pub mod error;
 mod mm;
 mod fs;
 mod process;
 mod timer;
+mod misc;
 
 const SYSCALL_GETCWD: usize = 17;
 const SYSCALL_DUP: usize = 23;
 const SYSCALL_DUP3: usize = 24;
 const SYSCALL_FCNTL: usize = 25;
 const SYSCALL_IOCTL: usize = 29;
-const SYSCALL_UNLINK: usize = 35;
 const SYSCALL_MKNOD: usize = 33;
 const SYSCALL_MKDIR: usize = 34;
+const SYSCALL_UNLINK: usize = 35;
+const SYSCALL_SYMLINKAT: usize = 36;
+const SYSCALL_LINKAT: usize = 37;
 const SYSCALL_UMOUNT: usize = 39;
 const SYSCALL_MOUNT: usize = 40;
 const SYSCALL_STATFS: usize = 43;
@@ -114,7 +127,7 @@ const SYSCALL_MSYNC: usize = 227;
 const SYSCALL_MADVISE: usize = 233;
 const SYSCALL_WAIT4: usize = 260;
 const SYSCALL_PRLIMIT64: usize = 261;
-const SYSCALL_REMANEAT2: usize = 276;
+const SYSCALL_RENAMEAT2: usize = 276;
 const SYSCALL_GETRANDOM: usize = 278;
 const SYSCALL_MEMBARRIER: usize = 283;
 const SYSCALL_COPY_FILE_RANGE: usize = 285;
@@ -153,6 +166,13 @@ pub fn syscall(id: usize, args: [usize; 6]) -> isize {
         SYSCALL_TIMES => { sys_times(args[0] as *mut Tms) }
         SYSCALL_NANOSLEEP => { sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec) }
         SYSCALL_PIPE => { sys_pipe2(args[0] as *mut i32, args[1] as u32) }
+        SYSCALL_LSEEK => { sys_lseek(args[0] as usize, args[1] as isize, args[2] as u8)}
+        SYSCALL_LINKAT => { sys_linkat(args[0] as isize, args[1] as *const u8, args[2] as isize, args[3] as *const u8, args[4] as u32) }
+        SYSCALL_SYMLINKAT => { sys_symlinkat(args[0] as *const u8, args[1] as isize, args[2] as *const u8) }
+        SYSCALL_READLINKAT => { sys_readlinkat(args[0] as isize, args[1] as *const u8, args[2] as *mut u8, args[3] as isize) }
+        SYSCALL_FTRUNCATE => { sys_ftruncate(args[0] as usize, args[1] as isize) }
+        SYSCALL_RENAMEAT2 => { sys_renameat2(args[0] as isize, args[1] as *const u8, args[2] as isize, args[3] as *const u8, args[4] as u32) }
+        SYSCALL_GETRANDOM => { sys_getrandom(args[0] as *mut u8, args[1] as usize, args[2] as usize) }
         _ => {
             println!("Unsupported syscall id {}", id);
             Ok(0)
@@ -355,27 +375,28 @@ impl From<InodeMode> for Dirent64Type {
             InodeMode::Directory => Dirent64Type::DT_DIR,
             InodeMode::FIFO => Dirent64Type::DT_FIFO,
             InodeMode::Socket => Dirent64Type::DT_SOCK,
+            InodeMode::UNKNOWN => Dirent64Type::DT_UNKNOWN,
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum FSType {
     VFAT,
-    EXT2,
-    Proc,
-    Dev,
-    Tmpfs,
+    EXT4,
+    ProcFs,
+    DevFs,
+    TmpFs,
 }
 
 impl FSType {
     pub fn str_to_type(s: &str) -> Self {
         match s {
             "vfat" => FSType::VFAT,
-            "ext2" => FSType::EXT2,
-            "proc" => FSType::Proc,
-            "dev" => FSType::Dev,
-            "tmpfs" => FSType::Tmpfs,
+            "ext4" => FSType::EXT4,
+            "proc" => FSType::ProcFs,
+            "devtmpfs" => FSType::DevFs,
+            "tmpfs" => FSType::TmpFs,
             _ => panic!("Unsupport file system type!"),
         }
     }
