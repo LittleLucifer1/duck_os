@@ -34,7 +34,7 @@ impl TmpFileSystem {
         device: Option<Arc<dyn BlockDevice>>,
         flags: FSFlags,
     ) -> Self {
-        let inode = SimpleInode::new(InodeMode::Directory);
+        let inode = SimpleInode::new(InodeMode::Directory, 0);
         let inode_arc:Arc<dyn Inode> = Arc::new(inode);
         let name = dentry_name(mount_point);
         

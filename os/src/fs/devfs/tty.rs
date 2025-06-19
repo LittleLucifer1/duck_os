@@ -113,7 +113,7 @@ impl TtyFile {
     pub fn new(dentry: Arc<dyn Dentry>, inode: Weak<dyn Inode>) -> Self {
         Self {
             meta: FileMeta { 
-                f_mode: FileMode::all(), 
+                f_mode: FileMode::empty(), 
                 page_cache: None,
                 f_dentry: Some(dentry),
                 f_inode: inode,
@@ -132,10 +132,12 @@ impl File for TtyFile {
         &self.meta
     }
 
+    // TODO: unimplemented
     fn read(&self, buf: &mut [u8], _flags: OpenFlags) -> OSResult<usize> {
         Ok(0)
     }
 
+    // TODO: unimplemented
     fn write(&self, buf: &[u8], _flags: OpenFlags) -> OSResult<usize> {
         Ok(buf.len())
     }
@@ -209,7 +211,6 @@ impl TtyInner {
             win_size: WinSize::new(), 
             termios: Termios::new(),
         }
-
     }
 }
 

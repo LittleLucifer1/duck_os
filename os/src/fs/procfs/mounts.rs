@@ -107,7 +107,7 @@ impl MountsFile {
     pub fn new(dentry: Arc<dyn Dentry>, inode: Weak<dyn Inode>) -> Self {
         Self {
             meta: FileMeta { 
-                f_mode: FileMode::all(), 
+                f_mode: FileMode::empty(), 
                 page_cache: None,
                 f_dentry: Some(dentry),
                 f_inode: inode,
@@ -126,15 +126,16 @@ impl File for MountsFile {
     }
 
     fn read(&self, buf: &mut [u8], _flags: OpenFlags) -> OSResult<usize> {
-        // TODO: 还没完成！
+        // TODO: 还没完成！同时根据具体的例子来判断这里需不需要更新 file_pos? 难道不可以一口气全读完吗
         let message = "TODO: Not implemented!";
         let len = message.len();
-        let file_pos = self.meta.inner.lock().f_pos;
+        let mut file_pos = self.meta.inner.lock().f_pos;
         if file_pos >= len { 
             // file_pos记录着此时文件所读取的位置，如果超过了len，说明没有可以读的了
             return Ok(0);
         }
         buf[..len].copy_from_slice(message.as_bytes());
+        file_pos += len;
         Ok(len)
     }
 

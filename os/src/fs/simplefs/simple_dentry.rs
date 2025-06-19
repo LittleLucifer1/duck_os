@@ -41,7 +41,7 @@ impl SimpleDentry {
     }
 
     fn mkdir(&self, path: &str, mode: InodeMode) -> OSResult<Arc<dyn Dentry>> {
-        let new_inode = SimpleInode::new(mode);
+        let new_inode = SimpleInode::new(mode, 0);
         let new_inode_arc: Arc<dyn Inode> = Arc::new(new_inode);
         let new_dirent = SimpleDentry::new(
             dentry_name(path).to_string(), 
@@ -55,7 +55,7 @@ impl SimpleDentry {
     }
 
     fn mknod(&self, path: &str, mode: InodeMode, _dev_id: Option<usize>) -> OSResult<Arc<dyn Dentry>> {
-        let new_inode = SimpleInode::new(mode);
+        let new_inode = SimpleInode::new(mode, 0);
         let new_inode_arc: Arc<dyn Inode> = Arc::new(new_inode);
         let new_dirent = SimpleDentry::new(
             dentry_name(path).to_string(), 

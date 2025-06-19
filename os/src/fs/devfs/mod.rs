@@ -1,4 +1,5 @@
 use alloc::{string::{String, ToString}, sync::Arc};
+use cpu_dma_lantency::{CpuDmaLatencyDentry, CpuDmaLatencyInode};
 use null::{NullDentry, NullInode};
 use rtc::{RtcDentry, RtcInode};
 use tty::{TtyDentry, TtyInode};
@@ -32,95 +33,108 @@ impl FileSystem for DevFileSystem {
 
     fn init(&self) {
         let root_dentry = self.root_dentry();
-        let pa_path = &root_dentry.metadata().inner.lock().d_path;
+        let pa_path = root_dentry.metadata().inner.lock().d_path.clone();
+        
         // /dev/zero
         let name = String::from("zero");
         let inode = ZeroInode::new(InodeMode::Char);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
+        let path = pa_path.clone() + &name;
         let dentry = ZeroDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(), 
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
-        
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
+
         // /dev/null
         let name = String::from("null");
         let inode = NullInode::new(InodeMode::Char);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
+        let path = pa_path.clone() + &name;
         let dentry = NullDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(),
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
-        
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
+
         // /dev/rtc
         let name = String::from("rtc");
         let inode = RtcInode::new(InodeMode::Regular);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
+        let path = pa_path.clone() + &name;
         let dentry = RtcDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(), 
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
-        
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
+
         // /dev/cpu_dma_latency
         let name = String::from("cpu_pma_latency");
-        let inode = UrandomInode::new(InodeMode::Char);
+        let inode = CpuDmaLatencyInode::new(InodeMode::Char);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
-        let dentry = UrandomDentry::new(
+        let path = pa_path.clone() + &name;
+        let dentry = CpuDmaLatencyDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(), 
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
 
         // /dev/urandom
         let name = String::from("urandom");
         let inode = UrandomInode::new(InodeMode::Char);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
+        let path = pa_path.clone() + &name;
         let dentry = UrandomDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(), 
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
-        
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
+
         // /dev/tty
         let name = String::from("tty");
         let inode = TtyInode::new(InodeMode::Char);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
+        let path = pa_path.clone() + &name;
         let dentry = TtyDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(), 
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
     }
 }
 
 impl DevFileSystem {
     pub fn new(
         mount_point: &str,
-        dev_name: &str,
-        device: Option<Arc<dyn BlockDevice>>,
+        _dev_name: &str,
+        _device: Option<Arc<dyn BlockDevice>>,
         flags: FSFlags,
     ) -> Self {
-        let inode = SimpleInode::new(InodeMode::Directory);
+        let inode = SimpleInode::new(InodeMode::Directory, 0);
         let inode_arc:Arc<dyn Inode> = Arc::new(inode);
         let name = dentry_name(mount_point);
         

@@ -28,8 +28,7 @@ impl Pipe {
         } else {
             return None;
         }
-        let mut inode = SimpleInode::new(InodeMode::FIFO);
-        inode.set_size(PIPE_BUF_LEN);
+        let inode = SimpleInode::new(InodeMode::FIFO, PIPE_BUF_LEN);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
         Some(Self {
             status,

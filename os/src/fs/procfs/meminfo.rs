@@ -69,12 +69,13 @@ pub struct MemInfoInode {
 
 impl MemInfoInode {
     pub fn new(mode: InodeMode) -> Self {
+        let size = MEM_INFO.lock().serialize().len();
         Self { 
             meta: InodeMeta::new(
                 mode, 
                 0, 
                 InodeDev::Todo, 
-                SECTOR_SIZE, 
+                size,
                 TimeSpec::new(), 
                 TimeSpec::new(),
                 TimeSpec::new()
@@ -113,7 +114,7 @@ impl MemInfoFile {
     pub fn new(dentry: Arc<dyn Dentry>, inode: Weak<dyn Inode>) -> Self {
         Self {
             meta: FileMeta { 
-                f_mode: FileMode::all(), 
+                f_mode: FileMode::empty(), 
                 page_cache: None,
                 f_dentry: Some(dentry),
                 f_inode: inode,
@@ -134,10 +135,11 @@ impl File for MemInfoFile {
     fn read(&self, buf: &mut [u8], _flags: OpenFlags) -> OSResult<usize> {
         // TODO: 这里需要判断这个 file_offset 吗？？
         let message = MEM_INFO.lock().serialize();
-        let file_lock = self.meta.inner.lock();
+        let mut file_lock = self.meta.inner.lock();
         let file_offset = file_lock.f_pos;
         let len = (message.len() - file_offset).min(buf.len());
         buf[..len].copy_from_slice(&message.as_bytes()[file_offset..file_offset+len]);
+        file_lock.f_pos = file_offset + len;
         Ok(len)
     }
 

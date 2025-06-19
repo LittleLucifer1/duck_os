@@ -25,32 +25,36 @@ impl FileSystem for ProcFileSystem {
 
     fn init(&self) {
         let root_dentry = self.root_dentry();
-        let pa_path = &root_dentry.metadata().inner.lock().d_path;
+        let pa_path = root_dentry.metadata().inner.lock().d_path.clone();
         // /proc/Meminfo
         let name = String::from("meminfo");
         let inode = MemInfoInode::new(InodeMode::Regular);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
+        let path = pa_path.clone() + &name;
         let dentry = MemInfoDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(), 
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
-        
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
+
         // /proc/mounts
         let name = String::from("mounts");
         let inode = MountsInode::new(InodeMode::Regular);
         let inode_arc: Arc<dyn Inode> = Arc::new(inode);
+        let path = pa_path.clone() + &name;
         let dentry = MountsDentry::new(
             name.clone(),
-            pa_path.clone() + &name, 
+            path.clone(), 
             inode_arc, 
             Some(Arc::clone(&root_dentry))
         );
         let dentry_arc: Arc<dyn Dentry> = Arc::new(dentry);
-        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc);
+        root_dentry.metadata().inner.lock().d_child.insert(name, dentry_arc.clone());
+        DENTRY_CACHE.lock().insert(path, dentry_arc);
 
         // /proc/exec
         // let name = String::from("meminfo");
@@ -74,7 +78,7 @@ impl ProcFileSystem {
         device: Option<Arc<dyn BlockDevice>>,
         flags: FSFlags,
     ) -> Self {
-        let inode = SimpleInode::new(InodeMode::Directory);
+        let inode = SimpleInode::new(InodeMode::Directory, 0);
         let inode_arc:Arc<dyn Inode> = Arc::new(inode);
         let name = dentry_name(mount_point);
         

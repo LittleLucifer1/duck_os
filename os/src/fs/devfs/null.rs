@@ -107,7 +107,7 @@ impl NullFile {
     pub fn new(dentry: Arc<dyn Dentry>, inode: Weak<dyn Inode>) -> Self {
         Self {
             meta: FileMeta { 
-                f_mode: FileMode::all(), 
+                f_mode: FileMode::empty(), 
                 page_cache: None,
                 f_dentry: Some(dentry),
                 f_inode: inode,

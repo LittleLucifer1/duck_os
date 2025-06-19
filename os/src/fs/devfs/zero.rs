@@ -107,7 +107,7 @@ impl ZeroFile {
     pub fn new(dentry: Arc<dyn Dentry>, inode: Weak<dyn Inode>) -> Self {
         Self {
             meta: FileMeta { 
-                f_mode: FileMode::all(), 
+                f_mode: FileMode::empty(), 
                 page_cache: None,
                 f_dentry: Some(dentry),
                 f_inode: inode,
@@ -133,4 +133,5 @@ impl File for ZeroFile {
     fn write(&self, buf: &[u8], _flags: OpenFlags) -> OSResult<usize> {
         Ok(buf.len())
     }
+    // TODO: 似乎有一个 get_page_at 可能需要处理
 }

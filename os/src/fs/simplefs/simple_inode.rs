@@ -30,13 +30,13 @@ impl Inode for SimpleInode {
 
 
 impl SimpleInode {
-    pub fn new(mode: InodeMode) -> Self {
+    pub fn new(mode: InodeMode, size: usize) -> Self {
         Self {
             meta: InodeMeta::new(
                 mode, 
                 0, 
                 InodeDev::Todo, 
-                0, 
+                size, 
                 TimeSpec::new(), 
                 TimeSpec::new(),
                 TimeSpec::new(),

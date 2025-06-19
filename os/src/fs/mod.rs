@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use log::info;
 
 use crate::{driver::BLOCK_DEVICE, syscall::{FSFlags, FSType}};
 
@@ -32,34 +33,37 @@ pub fn init() {
         FSType::EXT4, 
         FSFlags::MS_NOSUID,
     ).expect("Mounting root filesystem wrong, reason is: ");
-    // FILE_SYSTEM_MANAGER
-    //     .mount(
-    //         "/dev", 
-    //         "Not implemented yet", 
-    //         None, 
-    //         FSType::DevFs, 
-    //         FSFlags::MS_NOSUID,
-    //     );
-    // FILE_SYSTEM_MANAGER.manager.lock().get("/dev").unwrap().init();
+    info!("Mounting root ext4 file system, success.");
+    FILE_SYSTEM_MANAGER
+        .mount(
+            "/dev", 
+            "Not implemented yet", 
+            None, 
+            FSType::DevFs, 
+            FSFlags::MS_NOSUID,
+        ).expect("Mounting /dev filesystem wrong ");
+    FILE_SYSTEM_MANAGER.manager.lock().get("/dev").unwrap().init();
+    info!("Mounting /dev file system, success.");
 
-    // FILE_SYSTEM_MANAGER
-    //     .mount(
-    //         "/proc", 
-    //         "Not implemented yet", 
-    //         None, 
-    //         FSType::ProcFs, 
-    //         FSFlags::MS_NOSUID,
-    //     );
-    // FILE_SYSTEM_MANAGER.manager.lock().get("/proc").unwrap().init();
+    FILE_SYSTEM_MANAGER
+        .mount(
+            "/proc", 
+            "Not implemented yet", 
+            None, 
+            FSType::ProcFs, 
+            FSFlags::MS_NOSUID,
+        ).expect("Mounting /proc filesystem wrong ");
+    FILE_SYSTEM_MANAGER.manager.lock().get("/proc").unwrap().init();
+    info!("Mounting /proc file system, success.");
 
-    // FILE_SYSTEM_MANAGER
-    // .mount(
-    //     "/tmp", 
-    //     "Not implemented yet", 
-    //     None, 
-    //     FSType::TmpFs, 
-    //     FSFlags::MS_NOSUID,
-    // );
-
+    FILE_SYSTEM_MANAGER
+    .mount(
+        "/tmp", 
+        "Not implemented yet", 
+        None, 
+        FSType::TmpFs, 
+        FSFlags::MS_NOSUID,
+    ).expect("Mounting /tmp filesystem wrong ");
+    info!("Mounting /tmp file system, success.");
 
 }
