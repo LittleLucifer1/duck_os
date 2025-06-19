@@ -2,6 +2,7 @@
 // 参考资料：https://github.com/chenpengcong/blog/issues/18
 
 use alloc::{string::String, vec::Vec};
+use log::{debug, info};
 use xmas_elf::ElfFile;
 use crate::{config::mm::PAGE_SIZE, process::hart::env::SumGuard, utils::random::RANDOM_GENERATOR};
 
@@ -64,8 +65,8 @@ impl StackInfo {
         self.auxv.push((AT_RANDOM, value));
     }
 
-    pub fn set_auxv_at_null(&mut self, _value: usize) {
-        self.auxv.push((AT_NULL, 0));
+    pub fn set_auxv_at_null(&mut self, value: usize) {
+        self.auxv.push((AT_NULL, value));
     }
 
     pub fn set_auxv_at_execfn(&mut self, value: usize) {
@@ -95,6 +96,10 @@ impl StackInfo {
             envp_addr.push(sp);
             
             unsafe {
+                debug!(
+                    "[stack.rs] envp i:{} ptr addr 0x{:x}, end_ptr addr 0x{:x}, envs_len: {}",
+                    i, ptr as usize, end_ptr as usize, self.envs[i].len() as usize
+                );
                 core::ptr::copy_nonoverlapping(
                     self.envs[i].as_ptr(), ptr, self.envs[i].len()
                 );
@@ -113,7 +118,10 @@ impl StackInfo {
             let ptr = sp as *mut u8;
             argv_addr.push(sp);
             unsafe {
-                // ptr.copy_from(self.args[i].as_ptr(), self.args[i].len());
+                debug!(
+                    "[stack.rs] argu i:{} ptr addr 0x{:x}, end_ptr addr 0x{:x}, envs_len: {}",
+                    i, ptr as usize, end_ptr as usize, self.args[i].len() as usize
+                );
                 core::ptr::copy_nonoverlapping(
                     self.args[i].as_ptr(), ptr, self.args[i].len()
                 );
@@ -131,6 +139,10 @@ impl StackInfo {
         self.set_auxv_at_platform(sp);
         let ptr = sp as *mut u8;
         unsafe {
+            debug!(
+                "[stack.rs] platform: ptr addr 0x{:x}",
+                ptr as usize
+            );
             core::ptr::copy_nonoverlapping(
                 platform.as_ptr(), ptr, platform.len()
             );
@@ -143,17 +155,22 @@ impl StackInfo {
         let mut random_bytes = [0u8; 16];
         let mut rng = RANDOM_GENERATOR.lock();
         for i in 0..4 {
-            random_bytes[i*4..(i+1)*4].copy_from_slice(&rng.genrand_u32().to_be_bytes());
+            random_bytes[i*4..(i+1)*4].copy_from_slice(&(rng.genrand_u32() as u32).to_be_bytes());
         }
         drop(rng);
         unsafe {
+            debug!(
+                "[stack.rs] random bytes: ptr addr 0x{:x}",
+                ptr as usize
+            );
             core::ptr::copy_nonoverlapping(random_bytes.as_ptr(), ptr, 16);
         }
         // padding 对齐16字节
         sp &= !(core::mem::size_of::<usize>() * 2 - 1);
 
         // construct auxv
-        self.set_auxv_at_execfn(argv_addr[0]);
+        let execfn = argv_addr.first().copied().unwrap_or(0);
+        self.set_auxv_at_execfn(execfn);
         self.set_auxv_at_null(0);
         let auxv_size = core::mem::size_of::<usize>() * 2;
         let auxv_space = self.auxv.len() * auxv_size;
@@ -202,6 +219,10 @@ impl StackInfo {
             *(sp as *mut usize) = self.args.len() as usize;
         }
         // TODO：不太确定这里的sp是否还要对齐到16字节 ？？？？？
+        debug!(
+            "[stack.rs] argc_0: 0x{:x}, argv_0: 0x{:x}, envp_0: 0x{:x}, auxv_0: 0x{:x}",
+            argc_0, argv_0, envp_0, auxv_0
+        );
         (sp, StackLayout::new(argc_0, argv_0, envp_0, auxv_0))
     }
 

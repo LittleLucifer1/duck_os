@@ -4,7 +4,7 @@ use alloc::{sync::Weak, string::{String, ToString}, sync::Arc, vec::Vec};
 
 use crate::{fs::fd_table::FdTable, mm::memory_set::mem_set::MemorySet, sync::SpinLock, syscall::CloneFlags};
 
-use super::{context::TaskContext, kstack::Kstack, loader::load_elf, pid::{alloc_pid, Pid}, schedule::push_task_to_schedule, trap::context::{Register, TrapContext}};
+use super::{context::TaskContext, kstack::Kstack, loader::{load_elf, stack::StackLayout}, pid::{alloc_pid, Pid}, schedule::push_task_to_schedule, trap::context::{Register, TrapContext}};
 
 pub struct PCB {
     // 进程相关
@@ -149,10 +149,13 @@ impl PCB {
         // TODO：关闭其他的线程组
         
         let mut vm_lock = self.vm.lock();
-        let (entry, user_stack, stack_layout) = load_elf(data, &mut vm_lock, args_vec, envs_vec);
+        let (entry, user_stack_top, mut stack_info) = load_elf(data, &mut vm_lock, args_vec, envs_vec);
         vm_lock.activate();
+        let (_sp, layout) = stack_info.build_stack(user_stack_top);
+    
+        let stack_layout: Option<StackLayout> = Some(layout);
         let kernel_stack = self.kernel_stack.push_trap_cx(
-            TrapContext::exec_trap_cx(entry, user_stack, stack_layout.unwrap())
+            TrapContext::exec_trap_cx(entry, user_stack_top, stack_layout.unwrap())
         );
         self.inner.lock().task_cx = TaskContext::init_task_cx(kernel_stack);
     }

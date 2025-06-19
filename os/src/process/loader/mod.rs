@@ -14,7 +14,7 @@ use crate::{
         vma::{MapType, VirtMemoryAddr, VmaType}
     }, syscall::error::OSResult
 };
-use self::stack::{StackInfo, StackLayout};
+use self::stack::StackInfo;
 
 pub mod stack;
 
@@ -31,7 +31,7 @@ pub fn check_magic(elf: &xmas_elf::ElfFile) -> bool {
 
 // Function: 映射不同段、映射进程的 user_stack、heap、处理栈中的auxv、argc、argv
 // Return：(entry_point, ustack_sp, StackLayout)
-pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<String>) -> (usize, usize, Option<StackLayout>) {
+pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<String>) -> (usize, usize, StackInfo) {
     let elf = xmas_elf::ElfFile::new(&data).unwrap();
     // 检查魔数
     if !check_magic(&elf) {
@@ -57,7 +57,7 @@ pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<St
         None,
         0
     );
-    info!("The ustack start is 0x{:x}, ustack end is 0x{:X}", user_stack_bottom, user_stack_top);
+    info!("The ustack start is 0x{:x}, ustack end is 0x{:x}", user_stack_bottom, user_stack_top);
     // TODO: 这里的堆到底有没有成功映射 DONE：有，只不过没有任何的映射数据罢了。
     let heap_end = heap_start;
     vm.push(VirtMemoryAddr::new(
@@ -72,7 +72,7 @@ pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<St
         0
     );
     vm.heap_end = heap_end;
-    info!("The heap start is 0x{:x}, heap end is 0x{:X}", heap_start, heap_end);
+    info!("The heap start is 0x{:x}, heap end is 0x{:x}", heap_start, heap_end);
     
     // 需要构建user stack中的内容，无论什么情况，都需要构建argc,argv,auxv的结构
     let mut stack_info = StackInfo::empty();
@@ -84,12 +84,9 @@ pub fn load_elf(data: &[u8], vm: &mut MemorySet, args: Vec<String>, envs: Vec<St
     } else {
         stack_info.set_auxv_at_base(0);
     }
-    // let (_sp, layout) = stack_info.build_stack(user_stack_top);
     
-    // let stack_layout: Option<StackLayout> = Some(layout);
-    let stack_layout: Option<StackLayout> = Some(StackLayout::empty());
     info!("The entry_point is {:x}, user_stack_top is {:x}, user_stack_bottom is {:x}", entry_point, user_stack_top, user_stack_bottom);
-    (entry_point, user_stack_top, stack_layout)
+    (entry_point, user_stack_top, stack_info)
     
 }
 
@@ -147,6 +144,7 @@ fn map_elf_at(elf: &xmas_elf::ElfFile, file: Option<Arc<dyn File>>, vm: &mut Mem
                     vaddr_offset(start_va)
                 );
             }
+            info!("[map_elf_at]: map vma from elf, start addr is 0x{:x?}, end addr is 0x{:x?}", start_va, end_va);
             max_end = max_end.max(align_up(end_va));
         }
     }

@@ -31,7 +31,7 @@ use crate::{
         mm::{LOW_LIMIT, MEMORY_END, PAGE_SIZE, PHY_TO_VIRT_OFFSET, USER_UPPER_LIMIT}, 
         task::{CORE_STACK_SIZE, MAX_CORE_NUM}
     }, driver::qemu::MMIO, mm::{
-        address::{align_down, byte_array, phys_to_ppn, ppn_to_phys, virt_to_vpn, vpn_to_virt}, cow::CowManager, page_table::PageTable, 
+        address::{byte_array, phys_to_ppn, ppn_to_phys, vpn_to_virt}, cow::CowManager, page_table::PageTable, 
         pma::BackenFile, type_cast::{MapPermission, PTEFlags}, 
         vma::{MapType, VirtMemoryAddr, VmaType}, vma_range::vma_range::VmaRange
     }, syscall::error::{Errno, OSResult}, utils::cell::SyncUnsafeCell
